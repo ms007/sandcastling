@@ -22,28 +22,28 @@
  *     user. On warm reuse this is a no-op.
  */
 
-import { SANDBOX_HOME, WORKSPACE_PATH } from "./internal.ts";
+import { SANDBOX_HOME, WORKSPACE_PATH } from "./internal.ts"
 
 // `find ! -name <basename>` needs a basename, not an absolute path.
-const WORKSPACE_BASENAME = WORKSPACE_PATH.slice(SANDBOX_HOME.length + 1);
+const WORKSPACE_BASENAME = WORKSPACE_PATH.slice(SANDBOX_HOME.length + 1)
 
 export interface ChownScriptOptions {
-  readonly uid: number;
-  readonly gid: number;
+  readonly uid: number
+  readonly gid: number
   /** Absolute paths inside the sandbox where named volumes are mounted. */
-  readonly volumePaths: readonly string[];
+  readonly volumePaths: readonly string[]
 }
 
 export function buildChownScript({ uid, gid, volumePaths }: ChownScriptOptions): string {
-  const owner = `${uid}:${gid}`;
+  const owner = `${uid}:${gid}`
   const segments = [
     // Recursive chown of overlay-fs home entries, skipping the workspace bind-mount.
     `find ${SANDBOX_HOME} -mindepth 1 -maxdepth 1 ! -name ${WORKSPACE_BASENAME} -exec chown -R ${owner} {} +`,
     // Depth-0 chown of $HOME so new dotfiles can be created.
     `chown ${owner} ${SANDBOX_HOME}`,
     ...volumePaths.map((path) => volumeChownSegment(path, uid, owner)),
-  ];
-  return segments.join(" && ");
+  ]
+  return segments.join(" && ")
 }
 
 /**
@@ -55,6 +55,6 @@ export function buildChownScript({ uid, gid, volumePaths }: ChownScriptOptions):
 function volumeChownSegment(path: string, uid: number, owner: string): string {
   const isFreshlyMounted =
     `[ "$(stat -c %u ${path}/.)" != "${uid}" ] || ` +
-    `[ -n "$(find ${path} -maxdepth 2 ! -uid ${uid} -print -quit 2>/dev/null)" ]`;
-  return `chown ${owner} ${path}; if ${isFreshlyMounted}; then chown -R ${owner} ${path}; fi`;
+    `[ -n "$(find ${path} -maxdepth 2 ! -uid ${uid} -print -quit 2>/dev/null)" ]`
+  return `chown ${owner} ${path}; if ${isFreshlyMounted}; then chown -R ${owner} ${path}; fi`
 }

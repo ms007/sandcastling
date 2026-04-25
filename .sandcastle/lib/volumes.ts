@@ -8,24 +8,24 @@
  * package-manager stores.
  */
 
-import { WORKSPACE_PATH, spawnDocker } from "./internal.ts";
+import { WORKSPACE_PATH, spawnDocker } from "./internal.ts"
 
 /** A single named docker volume mounted at a fixed path inside the sandbox. */
 export interface VolumeMount {
   /** Named docker volume; created on demand and persisted across runs. */
-  readonly volumeName: string;
+  readonly volumeName: string
   /** Absolute path inside the sandbox where the volume is mounted. */
-  readonly sandboxPath: string;
+  readonly sandboxPath: string
 }
 
 /** Names for the default JS-workspace volume pair. */
 export interface WorkspaceVolumeNames {
-  readonly nodeModules: string;
-  readonly pnpmStore: string;
+  readonly nodeModules: string
+  readonly pnpmStore: string
 }
 
 /** Subset of `console` used for warning emission — keeps the surface mockable. */
-export type WarnLogger = Pick<Console, "warn">;
+export type WarnLogger = Pick<Console, "warn">
 
 /**
  * Standard volume layout for a JS workspace: `node_modules/` and `.pnpm-store/`
@@ -41,7 +41,7 @@ export function workspaceVolumes(names: WorkspaceVolumeNames): VolumeMount[] {
       volumeName: names.pnpmStore,
       sandboxPath: `${WORKSPACE_PATH}/.pnpm-store`,
     },
-  ];
+  ]
 }
 
 /**
@@ -55,14 +55,14 @@ export async function removeVolumes(
   volumeNames: readonly string[],
   logger: WarnLogger = console,
 ): Promise<void> {
-  await Promise.all(volumeNames.map((name) => removeVolume(name, logger)));
+  await Promise.all(volumeNames.map((name) => removeVolume(name, logger)))
 }
 
 async function removeVolume(name: string, logger: WarnLogger): Promise<void> {
   const { exitCode, stderr } = await spawnDocker(["volume", "rm", name], {
     discardStdout: true,
-  });
+  })
   if (exitCode !== 0) {
-    logger.warn(`docker volume rm ${name} failed (non-fatal): ${stderr.trim()}`);
+    logger.warn(`docker volume rm ${name} failed (non-fatal): ${stderr.trim()}`)
   }
 }

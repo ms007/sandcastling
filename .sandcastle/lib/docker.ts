@@ -7,8 +7,8 @@
  * are mounted as named volumes on Docker Desktop's Linux-native filesystem,
  * and the chown step is narrowed to skip the bind-mounted worktree.
  */
-import { type StdioOptions, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { type StdioOptions, spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import {
   type BindMountCreateOptions,
   type BindMountSandboxHandle,
@@ -16,9 +16,9 @@ import {
   type ExecResult,
   type InteractiveExecOptions,
   createBindMountSandboxProvider,
-} from "@ai-hero/sandcastle";
+} from "@ai-hero/sandcastle"
 
-import { buildChownScript } from "./chown.ts";
+import { buildChownScript } from "./chown.ts"
 import {
   DockerCommandError,
   SANDBOX_HOME,
@@ -27,20 +27,20 @@ import {
   registerForCleanup,
   runDocker,
   spawnDocker,
-} from "./internal.ts";
-import { type VolumeMount, workspaceVolumes } from "./volumes.ts";
+} from "./internal.ts"
+import { type VolumeMount, workspaceVolumes } from "./volumes.ts"
 
 /** Configuration for the {@link docker} provider. */
 export interface DockerOptions {
   /** Image tag the sandbox container should be started from. */
-  readonly imageName: string;
+  readonly imageName: string
   /**
    * Persistent named docker volumes overlaid on workspace paths. Use for any
    * directory that would otherwise grow large inside the bind-mounted
    * worktree (`node_modules/`, package-manager stores). Volumes survive
    * container removal — wipe them via `removeVolumes` when needed.
    */
-  readonly volumes?: readonly VolumeMount[];
+  readonly volumes?: readonly VolumeMount[]
 }
 
 /**
@@ -54,7 +54,7 @@ export const SMOKE_DOCKER_OPTIONS: DockerOptions = {
     nodeModules: "sandcastle-smoke-node-modules",
     pnpmStore: "sandcastle-smoke-pnpm-store",
   }),
-};
+}
 
 /**
  * Build a Sandcastle bind-mount provider backed by Docker.
@@ -67,7 +67,7 @@ export function docker(options: DockerOptions = SMOKE_DOCKER_OPTIONS): BindMount
     name: "docker",
     sandboxHomedir: SANDBOX_HOME,
     create: (createOptions) => createDockerSandbox(createOptions, options),
-  });
+  })
 }
 
 // ---------- Sandbox creation -----------------------------------------------
@@ -76,13 +76,13 @@ async function createDockerSandbox(
   createOptions: BindMountCreateOptions,
   { imageName, volumes = [] }: DockerOptions,
 ): Promise<BindMountSandboxHandle> {
-  const containerName = `sandcastle-${randomUUID()}`;
-  const worktreePath = resolveWorktreePath(createOptions);
-  const uid = process.getuid?.() ?? 1000;
-  const gid = process.getgid?.() ?? 1000;
+  const containerName = `sandcastle-${randomUUID()}`
+  const worktreePath = resolveWorktreePath(createOptions)
+  const uid = process.getuid?.() ?? 1000
+  const gid = process.getgid?.() ?? 1000
 
   // `docker volume create` is idempotent — no-op if the volume already exists.
-  await Promise.all(volumes.map((v) => runDocker(["volume", "create", v.volumeName])));
+  await Promise.all(volumes.map((v) => runDocker(["volume", "create", v.volumeName])))
 
   await runDocker([
     "run",
@@ -97,9 +97,9 @@ async function createDockerSandbox(
     "--user",
     `${uid}:${gid}`,
     imageName,
-  ]);
+  ])
 
-  const unregisterCleanup = registerForCleanup(containerName);
+  const unregisterCleanup = registerForCleanup(containerName)
 
   try {
     await runDocker([
@@ -114,14 +114,14 @@ async function createDockerSandbox(
         gid,
         volumePaths: volumes.map((v) => v.sandboxPath),
       }),
-    ]);
+    ])
   } catch (error) {
     // Setup failed — tear the container down before propagating.
-    await safeRemove(containerName, unregisterCleanup);
-    throw error;
+    await safeRemove(containerName, unregisterCleanup)
+    throw error
   }
 
-  return createHandle(containerName, worktreePath, unregisterCleanup);
+  return createHandle(containerName, worktreePath, unregisterCleanup)
 }
 
 /**
@@ -131,8 +131,8 @@ async function createDockerSandbox(
  * forward compatibility with provider-config changes).
  */
 function resolveWorktreePath(createOptions: BindMountCreateOptions): string {
-  const matched = createOptions.mounts.find((m) => m.hostPath === createOptions.worktreePath);
-  return matched?.sandboxPath ?? WORKSPACE_PATH;
+  const matched = createOptions.mounts.find((m) => m.hostPath === createOptions.worktreePath)
+  return matched?.sandboxPath ?? WORKSPACE_PATH
 }
 
 /**
@@ -142,8 +142,8 @@ function resolveWorktreePath(createOptions: BindMountCreateOptions): string {
 async function safeRemove(containerName: string, unregisterCleanup: () => void): Promise<void> {
   const rm = await spawnDocker(["rm", "-f", containerName], {
     discardStdout: true,
-  });
-  if (rm.exitCode === 0) unregisterCleanup();
+  })
+  if (rm.exitCode === 0) unregisterCleanup()
 }
 
 // ---------- Handle ---------------------------------------------------------
@@ -160,19 +160,19 @@ function createHandle(
     copyFileIn: (hostPath, sandboxPath) => cp(hostPath, `${containerName}:${sandboxPath}`),
     copyFileOut: (sandboxPath, hostPath) => cp(`${containerName}:${sandboxPath}`, hostPath),
     close: async () => {
-      unregisterCleanup();
+      unregisterCleanup()
       // The container may already be gone (signal handler), so we ignore the
       // result — best-effort teardown.
-      await spawnDocker(["rm", "-f", containerName], { discardStdout: true });
+      await spawnDocker(["rm", "-f", containerName], { discardStdout: true })
     },
-  };
+  }
 }
 
 interface ExecOptions {
-  readonly onLine?: (line: string) => void;
-  readonly cwd?: string;
-  readonly sudo?: boolean;
-  readonly stdin?: string;
+  readonly onLine?: (line: string) => void
+  readonly cwd?: string
+  readonly sudo?: boolean
+  readonly stdin?: string
 }
 
 function execIn(
@@ -180,7 +180,7 @@ function execIn(
   command: string,
   opts: ExecOptions = {},
 ): Promise<ExecResult> {
-  const effective = opts.sudo ? `sudo ${command}` : command;
+  const effective = opts.sudo ? `sudo ${command}` : command
   // `-i` is required so stdin reaches the child. Always set it; harmless
   // when no stdin is piped, essential when sandcastle pipes a prompt.
   const args = [
@@ -191,8 +191,8 @@ function execIn(
     "sh",
     "-c",
     effective,
-  ];
-  return spawnDocker(args, { stdin: opts.stdin, onLine: opts.onLine });
+  ]
+  return spawnDocker(args, { stdin: opts.stdin, onLine: opts.onLine })
 }
 
 function interactiveExecIn(
@@ -200,51 +200,51 @@ function interactiveExecIn(
   command: readonly string[],
   opts: InteractiveExecOptions,
 ): Promise<{ exitCode: number }> {
-  const isTty = "isTTY" in opts.stdin && opts.stdin.isTTY === true;
+  const isTty = "isTTY" in opts.stdin && opts.stdin.isTTY === true
   const args = [
     "exec",
     isTty ? "-it" : "-i",
     ...(opts.cwd ? ["-w", opts.cwd] : []),
     containerName,
     ...command,
-  ];
+  ]
 
   // The interactive streams are typed as NodeJS.ReadableStream/WritableStream
   // interfaces, but the runtime objects are concrete Stream instances that
   // `spawn`'s stdio accepts. One boundary cast keeps the call site readable.
-  const stdio = [opts.stdin, opts.stdout, opts.stderr] as unknown as StdioOptions;
+  const stdio = [opts.stdin, opts.stdout, opts.stderr] as unknown as StdioOptions
 
   return new Promise((resolve, reject) => {
-    const proc = spawn("docker", args, { stdio });
+    const proc = spawn("docker", args, { stdio })
     proc.on("error", (error: Error) => {
-      reject(new DockerCommandError("exec (interactive)", error));
-    });
+      reject(new DockerCommandError("exec (interactive)", error))
+    })
     proc.on("close", (code: number | null) => {
-      resolve({ exitCode: code ?? 0 });
-    });
-  });
+      resolve({ exitCode: code ?? 0 })
+    })
+  })
 }
 
 async function cp(source: string, dest: string): Promise<void> {
   const result = await spawnDocker(["cp", source, dest], {
     discardStdout: true,
-  });
-  assertOk(result, "cp");
+  })
+  assertOk(result, "cp")
 }
 
 // ---------- CLI flag builders ---------------------------------------------
 
 function envFlags(env: Readonly<Record<string, string>>): string[] {
-  return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`])
 }
 
 function bindMountFlags(mounts: BindMountCreateOptions["mounts"]): string[] {
   return mounts.flatMap((m) => {
-    const spec = `${m.hostPath}:${m.sandboxPath}${m.readonly ? ":ro" : ""}`;
-    return ["-v", spec];
-  });
+    const spec = `${m.hostPath}:${m.sandboxPath}${m.readonly ? ":ro" : ""}`
+    return ["-v", spec]
+  })
 }
 
 function volumeFlags(volumes: readonly VolumeMount[]): string[] {
-  return volumes.flatMap((v) => ["-v", `${v.volumeName}:${v.sandboxPath}`]);
+  return volumes.flatMap((v) => ["-v", `${v.volumeName}:${v.sandboxPath}`])
 }

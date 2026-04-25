@@ -13,9 +13,11 @@
  */
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { captureBaseRef } from "./git.ts"
 import {
   REQUIRED_STATUSES,
   type StatusName,
+  defaultBranchLookup,
   getRelatedIssues,
   moveStatus,
   resolveProject,
@@ -50,7 +52,8 @@ async function main(): Promise<void> {
     }
     const { owner, repo } = await detectRepo()
     const project = await resolveProject(owner, repo)
-    const report = await getRelatedIssues(project, num)
+    const lookup = defaultBranchLookup(captureBaseRef().sha)
+    const report = await getRelatedIssues(project, num, lookup)
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
     return
   }

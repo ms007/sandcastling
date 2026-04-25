@@ -9,8 +9,9 @@
  * - `pickNextEligibleIssue` picks the oldest open `sandcastle`-labeled issue
  *   whose project Status is `Todo` and whose blockers are all resolved.
  * - `getRelatedIssues` resolves a seed issue plus its parent (PRD) and the
- *   parent's other sub-issues, annotated with `eligible` so the planner can
- *   decide which to schedule.
+ *   parent's other sub-issues, annotated with `eligible`, dependency lists,
+ *   and per-branch git state so the planner can decide which to schedule and
+ *   recover stale runs.
  * - `moveStatus` updates a project item's Status to one of the four canonical
  *   names.
  *
@@ -19,6 +20,7 @@
  */
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { type BranchInfo, issueBranchName, readBranchInfo } from "./git.ts"
 
 const execFileP = promisify(execFile)
 
@@ -47,8 +49,9 @@ export interface EligibleIssue {
 }
 
 /**
- * Snapshot of a single issue's project-board state, with a derived
- * `eligible` flag the planner uses to filter scheduling candidates.
+ * Snapshot of a single issue's project-board + dependency + branch state.
+ * The planner consumes this — `eligible` is the simple gate, the rest gives
+ * it enough information to reason about transitive unblocking and stale work.
  */
 export interface RelatedIssue {
   readonly number: number
@@ -59,11 +62,17 @@ export interface RelatedIssue {
   readonly status: StatusName | null
   /**
    * `true` iff: on the board, Status=Todo, has `sandcastle` label, and
-   * `issueDependenciesSummary.blockedBy === 0`.
+   * `blockedBy.length === 0`. Branch state does NOT factor in — recovery
+   * is the planner's call, not an automatic gate.
    */
   readonly eligible: boolean
-  readonly blockedByCount: number
+  /** Issue numbers (in the same repo) that block this one. Empty when unblocked. */
+  readonly blockedBy: readonly number[]
+  /** Issue numbers (in the same repo) that are blocked by this one. */
+  readonly blocking: readonly number[]
   readonly hasSandcastleLabel: boolean
+  /** State of the conventional `sandcastle/issue-<n>` branch. */
+  readonly branch: BranchInfo
 }
 
 /** Variant carrying the issue body (used for seed and parent only). */
@@ -83,6 +92,13 @@ export interface RelatedIssuesReport {
    */
   readonly children: readonly RelatedIssue[]
 }
+
+/**
+ * Looks up the conventional sandcastle branch state for an issue. Injected
+ * into {@link getRelatedIssues} / {@link buildRelatedIssuesReport} so unit
+ * tests can pass a stub instead of shelling out to git.
+ */
+export type BranchLookup = (issueNumber: number) => BranchInfo
 
 // ---------- GraphQL response types (exported for test fixtures) ------------
 
@@ -110,8 +126,17 @@ export interface IssueNode {
   readonly projectItems: { readonly nodes: readonly ProjectItemNode[] }
 }
 
-export interface RelatedIssueNode extends IssueNode {
+export interface RelatedIssueNode {
+  readonly id: string
+  readonly number: number
+  readonly title: string
+  readonly body: string
   readonly labels: { readonly nodes: readonly { readonly name: string }[] }
+  readonly blockedBy: {
+    readonly nodes: readonly { readonly number: number }[]
+  }
+  readonly blocking: { readonly nodes: readonly { readonly number: number }[] }
+  readonly projectItems: { readonly nodes: readonly ProjectItemNode[] }
 }
 
 export interface RelatedIssueWithSubsNode extends RelatedIssueNode {
@@ -301,9 +326,21 @@ export function selectNextEligibleIssue(
   return null
 }
 
+/**
+ * Default branch lookup — reads the host's git for the conventional
+ * `sandcastle/issue-<n>` branch relative to the given base SHA. The base
+ * SHA defaults to current HEAD, which matches the planner's view since it
+ * runs against the same worktree HEAD captured by main.ts.
+ */
+export const defaultBranchLookup =
+  (baseSha: string): BranchLookup =>
+  (issueNumber: number) =>
+    readBranchInfo(baseSha, issueBranchName(issueNumber))
+
 export async function getRelatedIssues(
   ctx: ProjectContext,
   seedNumber: number,
+  branchLookup: BranchLookup,
 ): Promise<RelatedIssuesReport> {
   const data = await graphql<RelatedIssuesResponse>(
     `
@@ -328,7 +365,7 @@ export async function getRelatedIssues(
     throw new Error(`Issue #${seedNumber} not found in ${ctx.owner}/${ctx.repo}.`)
   }
 
-  return buildRelatedIssuesReport(ctx, seedNumber, issue)
+  return buildRelatedIssuesReport(ctx, seedNumber, issue, branchLookup)
 }
 
 /**
@@ -340,16 +377,17 @@ export function buildRelatedIssuesReport(
   ctx: ProjectContext,
   seedNumber: number,
   issue: RelatedIssueWithSubsNode,
+  branchLookup: BranchLookup,
 ): RelatedIssuesReport {
   const parent = issue.parent ?? null
   const siblings = (parent?.subIssues?.nodes ?? []).filter((s) => s.number !== seedNumber)
   const children = issue.subIssues?.nodes ?? []
 
   return {
-    seed: toRelatedIssueWithBody(issue, ctx),
-    parent: parent ? toRelatedIssueWithBody(parent, ctx) : null,
-    siblings: siblings.map((s) => toRelatedIssue(s, ctx)),
-    children: children.map((c) => toRelatedIssue(c, ctx)),
+    seed: toRelatedIssueWithBody(issue, ctx, branchLookup),
+    parent: parent ? toRelatedIssueWithBody(parent, ctx, branchLookup) : null,
+    siblings: siblings.map((s) => toRelatedIssue(s, ctx, branchLookup)),
+    children: children.map((c) => toRelatedIssue(c, ctx, branchLookup)),
   }
 }
 
@@ -403,12 +441,13 @@ interface PickIssuesResponse {
   } | null
 }
 
-const ISSUE_META_FIELDS = `
+const RELATED_ISSUE_META_FIELDS = `
   id
   number
   title
   labels(first: 20) { nodes { name } }
-  issueDependenciesSummary { blockedBy }
+  blockedBy(first: 50) { nodes { number } }
+  blocking(first: 50) { nodes { number } }
   projectItems(first: 10) {
     nodes {
       id
@@ -432,13 +471,13 @@ const ISSUE_META_FIELDS = `
 
 const ISSUE_FULL_FIELDS = `
   body
-  ${ISSUE_META_FIELDS}
+  ${RELATED_ISSUE_META_FIELDS}
 `
 
 const SUB_ISSUES_FRAGMENT = `
   subIssues(first: 50) {
     nodes {
-      ${ISSUE_META_FIELDS}
+      ${RELATED_ISSUE_META_FIELDS}
     }
   }
 `
@@ -449,24 +488,35 @@ interface RelatedIssuesResponse {
   } | null
 }
 
-function toRelatedIssue(node: RelatedIssueNode, ctx: ProjectContext): RelatedIssue {
+function toRelatedIssue(
+  node: RelatedIssueNode,
+  ctx: ProjectContext,
+  branchLookup: BranchLookup,
+): RelatedIssue {
   const item = node.projectItems.nodes.find((n) => n.project.id === ctx.projectId)
   const status = item ? readStatus(item, ctx) : null
-  const blockedByCount = node.issueDependenciesSummary.blockedBy
+  const blockedBy = node.blockedBy.nodes.map((n) => n.number)
+  const blocking = node.blocking.nodes.map((n) => n.number)
   const hasSandcastleLabel = node.labels.nodes.some((l) => l.name === "sandcastle")
   return {
     number: node.number,
     title: node.title,
     itemId: item?.id ?? null,
     status,
-    eligible: item != null && status === "Todo" && hasSandcastleLabel && blockedByCount === 0,
-    blockedByCount,
+    eligible: item != null && status === "Todo" && hasSandcastleLabel && blockedBy.length === 0,
+    blockedBy,
+    blocking,
     hasSandcastleLabel,
+    branch: branchLookup(node.number),
   }
 }
 
-function toRelatedIssueWithBody(node: RelatedIssueNode, ctx: ProjectContext): RelatedIssueWithBody {
-  return { ...toRelatedIssue(node, ctx), body: node.body }
+function toRelatedIssueWithBody(
+  node: RelatedIssueNode,
+  ctx: ProjectContext,
+  branchLookup: BranchLookup,
+): RelatedIssueWithBody {
+  return { ...toRelatedIssue(node, ctx, branchLookup), body: node.body }
 }
 
 function readStatus(item: ProjectItemNode, ctx: ProjectContext): StatusName | null {

@@ -6,9 +6,13 @@
  */
 export {
   type BaseRef,
+  type BranchCommit,
+  type BranchInfo,
   captureBaseRef,
   countCommitsAhead,
   formatBaseRef,
+  issueBranchName,
+  readBranchInfo,
 } from "./git.ts"
 export { docker, SMOKE_DOCKER_OPTIONS, type DockerOptions } from "./docker.ts"
 export {
@@ -27,10 +31,16 @@ export {
 } from "./volumes.ts"
 export { claudeCustom } from "./agent.ts"
 export {
+  type BranchLookup,
+  defaultBranchLookup,
   type EligibleIssue,
+  getRelatedIssues,
   moveStatus,
   pickNextEligibleIssue,
   type ProjectContext,
+  type RelatedIssue,
+  type RelatedIssuesReport,
+  type RelatedIssueWithBody,
   resolveProject,
   type StatusName,
 } from "./project.ts"

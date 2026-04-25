@@ -10,7 +10,13 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, before, describe, it } from "node:test"
-import { captureBaseRef, countCommitsAhead, formatBaseRef } from "../git.ts"
+import {
+  captureBaseRef,
+  countCommitsAhead,
+  formatBaseRef,
+  issueBranchName,
+  readBranchInfo,
+} from "../git.ts"
 
 describe("git helpers (real subprocess)", () => {
   let repo: string
@@ -115,6 +121,57 @@ describe("git helpers (real subprocess)", () => {
         encoding: "utf8",
       }).trim()
       assert.equal(countCommitsAhead(headSha, "feature"), 0)
+    })
+  })
+
+  describe("issueBranchName", () => {
+    it("renders the conventional sandcastle branch path", () => {
+      assert.equal(issueBranchName(7), "sandcastle/issue-7")
+      assert.equal(issueBranchName(123), "sandcastle/issue-123")
+    })
+  })
+
+  describe("readBranchInfo", () => {
+    const baseSha = (): string =>
+      execFileSync("git", ["rev-parse", "main"], {
+        cwd: repo,
+        encoding: "utf8",
+      }).trim()
+
+    it("returns exists:false with empty defaults when the branch is missing", () => {
+      const info = readBranchInfo(baseSha(), "does-not-exist")
+      assert.equal(info.exists, false)
+      assert.equal(info.aheadOfBase, 0)
+      assert.equal(info.headSha, null)
+      assert.deepEqual(info.commits, [])
+      assert.equal(info.name, "does-not-exist")
+    })
+
+    it("returns exists:true with aheadOfBase:0 when the branch tip equals base", () => {
+      const info = readBranchInfo(baseSha(), "main")
+      assert.equal(info.exists, true)
+      assert.equal(info.aheadOfBase, 0)
+      assert.match(info.headSha ?? "", /^[0-9a-f]{40}$/)
+      assert.deepEqual(info.commits, [])
+    })
+
+    it("lists commits in base..branch (newest first), capped by commitLimit", () => {
+      const info = readBranchInfo(baseSha(), "feature", 1)
+      assert.equal(info.exists, true)
+      assert.equal(info.aheadOfBase, 2)
+      assert.equal(info.commits.length, 1)
+      assert.match(info.commits[0]?.sha ?? "", /^[0-9a-f]{40}$/)
+      // The newest commit on `feature` is "feat-2" — see the `before` setup.
+      assert.equal(info.commits[0]?.subject, "feat-2")
+    })
+
+    it("returns all commits when fewer than commitLimit are ahead", () => {
+      const info = readBranchInfo(baseSha(), "feature")
+      assert.equal(info.commits.length, 2)
+      assert.deepEqual(
+        info.commits.map((c) => c.subject),
+        ["feat-2", "feat-1"],
+      )
     })
   })
 })

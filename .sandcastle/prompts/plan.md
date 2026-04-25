@@ -1,10 +1,11 @@
 # TASK
 
-Plan a Sandcastle bundle starting from issue **#{{ISSUE_NUMBER}}**.
+Plan the Sandcastle run starting from issue **#{{ISSUE_NUMBER}}**.
 
-A *bundle* is the set of issues that will be implemented together on **one
-branch**, in **one sandbox**, by **one implementer agent**. You decide which
-related issues belong with the seed.
+A *run* implements one or more eligible issues. Each issue gets its **own
+branch** off HEAD and is implemented + reviewed in its own sandbox. A final
+merger step folds everything back into HEAD. Your job here is to pick the
+issues and assign branch names — nothing else.
 
 ## 1. Read the seed and its relations
 
@@ -14,100 +15,66 @@ related issues belong with the seed.
 
 </seed-issue>
 
-Pull the project-board snapshot for the seed and its siblings yourself — it
-tells you which siblings are eligible to bundle:
+Pull the project-board snapshot for the seed:
 
 ```bash
 bun .sandcastle/lib/project-cli.ts related {{ISSUE_NUMBER}}
 ```
 
 The output is JSON with `seed`, optional `parent`, `siblings[]`, and
-`children[]`. Each sibling and child carries an `eligible` flag and an
-`itemId` you will need in step 4.
+`children[]`. Each entry carries an `eligible` flag and the `itemId` you
+will need in step 3.
 
-If the seed has a parent (PRD), pull it for wider context:
+If the seed has a parent (PRD) and you need wider context, pull it too:
 
 ```bash
 gh issue view <parent-number>
 ```
 
-For each `eligible: true` sibling in the `related` output that you are
-seriously considering, pull its body and comments before deciding:
+## 2. Decide the issue list
+
+Apply this rule deterministically — do not paraphrase:
+
+- **Seed is `eligible: true`** (a normal implementation issue):
+  the issue list is exactly `[seed]`. Do **not** opportunistically add
+  siblings, even if they look related. The user picked this issue for a
+  reason; honour the scope.
+
+- **Seed is `eligible: false` AND `children[]` contains at least one entry
+  with `eligible: true`** (a PRD seed):
+  the issue list is **every** child with `eligible: true`, in ascending
+  issue-number order. Do not pivot recursively — even if a chosen child
+  has its own children, you stop here.
+
+- **Seed is `eligible: false` AND no eligible children**:
+  do not emit `<plan>`. Explain in prose what's wrong and exit. The
+  orchestrator treats the absence of `<plan>` as a planner failure.
+
+For each issue you are about to include, pull its body and comments before
+locking it in:
 
 ```bash
 gh issue view <number> --comments
 ```
 
-## 1a. Treat a PRD seed as a pointer to its first eligible child
+If any chosen issue is clearly blocked (open dependencies, missing
+acceptance criteria, contradicting comments), drop it from the list and
+note the reason in prose. Better to skip a borderline issue than to ship
+broken code.
 
-A PRD (the umbrella issue) is itself almost never `eligible` — it has no
-`sandcastle` label and is not on the board. Its child implementation
-slices are. If **both** of the following hold:
+## 3. Claim every chosen issue
 
-- The seed is `eligible: false`.
-- `children[]` contains at least one entry with `eligible: true`.
-
-then treat the **first** eligible child (lowest issue number) as the
-*effective seed* for steps 2–5. The remaining `eligible: true` children
-play the role of siblings for the bundling decision in step 2.
-
-Use the data already in `children[]` — it carries `number`, `title`,
-`itemId`, `eligible`, etc. **Do not** call `related` a second time, and do
-not pivot recursively (even if the chosen child itself had children, you
-stop here).
-
-For step 3, the original PRD seed is the parent of every chosen bundle
-item, so the branch name is `sandcastle/prd-<original-seed-number>`.
-
-If the seed is `eligible: false` and `children[]` has no eligible entry,
-do **not** pivot — fall through to the failure rule at the bottom of this
-file.
-
-## 2. Decide the bundle
-
-Include the seed plus zero or more siblings. Bundles of size 1 are normal
-and good — do not pad.
-
-Include a sibling **only if all** of these hold:
-
-- It is `eligible: true` in the `related` output (on the project board, has
-  the `sandcastle` label, Status=Todo, no unresolved blockers).
-- It is *tightly* coupled to the seed: same module, shared types, the test
-  for one would naturally live in the same file as the implementation of
-  the other, or one would create merge conflicts with the other if
-  implemented separately.
-
-Exclude a sibling if **any** of these hold:
-
-- It would be substantial enough to deserve its own run.
-- It touches a different area of the codebase.
-- It depends on the seed having merged before it can be implemented (let it
-  follow as a separate, later run).
-
-When in doubt, exclude. Smaller bundles are safer.
-
-## 3. Choose the branch name
-
-Apply this rule deterministically — do not paraphrase:
-
-- If **all** chosen bundle items share the same `parent` issue (the same PRD)
-  AND the parent's number is known: `sandcastle/prd-<parent-number>`.
-- Otherwise: `sandcastle/issue-<seed-number>`.
-
-## 4. Claim every chosen item
-
-For **each** issue in your final bundle, run exactly:
+For **each** issue in the final list, run exactly:
 
 ```bash
 bun .sandcastle/lib/project-cli.ts move-status <itemId> "In Progress"
 ```
 
-Use the exact `itemId` from the `related` output. The command is idempotent
-— re-running on an already-moved item is safe.
+Use the exact `itemId` from the `related` output. The command is
+idempotent. Do **not** emit the plan tag until every item has been
+claimed.
 
-Do **not** emit the plan tag until every item has been claimed.
-
-## 5. Emit the plan
+## 4. Emit the plan
 
 Output the plan as the **last** thing you produce, on its own block, with
 exactly this shape:
@@ -115,25 +82,27 @@ exactly this shape:
 ```
 <plan>
 {
-  "bundle": [
-    {"number": <n>, "title": "<title>", "itemId": "<itemId>"}
-  ],
-  "branch": "<branch-name>"
+  "issues": [
+    {
+      "number": <n>,
+      "title": "<title>",
+      "itemId": "<itemId>",
+      "branch": "sandcastle/issue-<n>"
+    }
+  ]
 }
 </plan>
 ```
 
-`bundle` MUST contain at least the seed and MAY contain more. JSON only —
+`issues` MUST contain at least one entry. The branch name is always
+`sandcastle/issue-<n>` — one branch per issue, no exceptions. JSON only,
 double quotes everywhere, no trailing commas.
 
 # RULES
 
-- Read-only mode for code: do **not** edit files, do **not** create commits,
-  do **not** switch branches. Your only writes are the GitHub Project v2
-  status mutations in step 4.
+- Read-only mode for code: do **not** edit files, do **not** create
+  commits, do **not** switch branches. Your only writes are the GitHub
+  Project v2 status mutations in step 3.
 - Code, comments, and any commentary in **English**.
-- If the seed itself is not eligible (e.g. blocked, missing label, not on
-  the board) **and** the auto-pivot in step 1a does not apply (no eligible
-  children), do not emit `<plan>` — explain in prose what's wrong and exit.
-  The orchestrator will treat the absence of `<plan>` as a planner failure
-  and skip the rest of the run.
+- If you cannot produce a valid issue list, do not emit `<plan>` — explain
+  in prose and exit.

@@ -10,7 +10,7 @@
  *   whose project Status is `Todo` and whose blockers are all resolved.
  * - `getRelatedIssues` resolves a seed issue plus its parent (PRD) and the
  *   parent's other sub-issues, annotated with `eligible` so the planner can
- *   decide which to bundle.
+ *   decide which to schedule.
  * - `moveStatus` updates a project item's Status to one of the four canonical
  *   names.
  *
@@ -48,7 +48,7 @@ export interface EligibleIssue {
 
 /**
  * Snapshot of a single issue's project-board state, with a derived
- * `eligible` flag the planner uses to filter bundle candidates.
+ * `eligible` flag the planner uses to filter scheduling candidates.
  */
 export interface RelatedIssue {
   readonly number: number;

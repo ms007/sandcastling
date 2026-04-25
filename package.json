@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "smoke": "tsx .sandcastle/main.ts",
+    "sandcastle": "tsx .sandcastle/main.ts",
     "build:image": "docker build -t sandcastle:smoke .sandcastle",
     "clean": "docker volume rm -f sandcastle-smoke-node-modules sandcastle-smoke-pnpm-store",
     "typecheck": "tsc --noEmit",

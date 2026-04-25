@@ -27,10 +27,7 @@ export const claudeCustom = (
     ...base,
     buildPrintCommand: (opts) => {
       const result = base.buildPrintCommand(opts);
-      const patched = result.command.replace(
-        "claude --print",
-        `claude --print${flag}`,
-      );
+      const patched = result.command.replace("claude --print", `claude --print${flag}`);
       if (patched === result.command) {
         throw new Error(
           "claudeCustom: failed to inject --system-prompt — sandcastle's claude command format may have changed.",

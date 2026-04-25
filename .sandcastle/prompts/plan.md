@@ -1,0 +1,108 @@
+# TASK
+
+Plan a Sandcastle bundle starting from issue **#{{ISSUE_NUMBER}}**.
+
+A *bundle* is the set of issues that will be implemented together on **one
+branch**, in **one sandbox**, by **one implementer agent**. You decide which
+related issues belong with the seed.
+
+## 1. Read the seed and its relations
+
+<seed-issue>
+
+!`gh issue view {{ISSUE_NUMBER}} --comments`
+
+</seed-issue>
+
+<related-issues>
+
+!`pnpm sand:project related {{ISSUE_NUMBER}}`
+
+</related-issues>
+
+If the seed has a parent (PRD), pull it for wider context:
+
+```bash
+gh issue view <parent-number>
+```
+
+For each `eligible: true` sibling that you are seriously considering, pull
+its body and comments before deciding:
+
+```bash
+gh issue view <number> --comments
+```
+
+## 2. Decide the bundle
+
+Include the seed plus zero or more siblings. Bundles of size 1 are normal
+and good — do not pad.
+
+Include a sibling **only if all** of these hold:
+
+- It is `eligible: true` in `<related-issues>` (on the project board, has the
+  `sandcastle` label, Status=Todo, no unresolved blockers).
+- It is *tightly* coupled to the seed: same module, shared types, the test
+  for one would naturally live in the same file as the implementation of
+  the other, or one would create merge conflicts with the other if
+  implemented separately.
+
+Exclude a sibling if **any** of these hold:
+
+- It would be substantial enough to deserve its own run.
+- It touches a different area of the codebase.
+- It depends on the seed having merged before it can be implemented (let it
+  follow as a separate, later run).
+
+When in doubt, exclude. Smaller bundles are safer.
+
+## 3. Choose the branch name
+
+Apply this rule deterministically — do not paraphrase:
+
+- If **all** chosen bundle items share the same `parent` issue (the same PRD)
+  AND the parent's number is known: `sandcastle/prd-<parent-number>`.
+- Otherwise: `sandcastle/issue-<seed-number>`.
+
+## 4. Claim every chosen item
+
+For **each** issue in your final bundle, run exactly:
+
+```bash
+pnpm sand:project move-status <itemId> "In Progress"
+```
+
+Use the exact `itemId` from `<related-issues>`. The command is idempotent —
+re-running on an already-moved item is safe.
+
+Do **not** emit the plan tag until every item has been claimed.
+
+## 5. Emit the plan
+
+Output the plan as the **last** thing you produce, on its own block, with
+exactly this shape:
+
+```
+<plan>
+{
+  "bundle": [
+    {"number": <n>, "title": "<title>", "itemId": "<itemId>"}
+  ],
+  "branch": "<branch-name>"
+}
+</plan>
+```
+
+`bundle` MUST contain at least the seed and MAY contain more. JSON only —
+double quotes everywhere, no trailing commas.
+
+# RULES
+
+- Read-only mode for code: do **not** edit files, do **not** create commits,
+  do **not** switch branches. Your only writes are the GitHub Project v2
+  status mutations in step 4.
+- Code, comments, and any commentary in **English**.
+- If the seed itself is not eligible (e.g. blocked, missing label, not on
+  the board), do not emit `<plan>` — explain in prose what's wrong and exit.
+  The orchestrator will treat the absence of `<plan>` as a planner failure
+  and skip the rest of the run.

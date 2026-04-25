@@ -12,3 +12,11 @@ export {
   type WorkspaceVolumeNames,
 } from "./volumes.ts";
 export { claudeCustom } from "./agent.ts";
+export {
+  type EligibleIssue,
+  moveStatus,
+  pickNextEligibleIssue,
+  type ProjectContext,
+  resolveProject,
+  type StatusName,
+} from "./project.ts";

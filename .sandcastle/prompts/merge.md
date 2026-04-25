@@ -68,11 +68,18 @@ Move its project status to `Done`:
 bun .sandcastle/lib/project-cli.ts move-status <itemId> "Done"
 ```
 
+Then drop every "blocked by this issue" edge so dependent issues become
+eligible on the next planner run:
+
+```bash
+bun .sandcastle/lib/project-cli.ts unblock-dependents <number>
+```
+
 The issue list at the top carries the `itemId` for each entry.
 
 If every child issue of a parent PRD is now closed, close the PRD too with
-the same close + status-move pair. Do not close a PRD that still has open
-children.
+the same close + status-move + unblock-dependents triple. Do not close a
+PRD that still has open children.
 
 # RULES
 

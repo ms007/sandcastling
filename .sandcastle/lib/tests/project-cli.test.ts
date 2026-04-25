@@ -4,8 +4,8 @@
  * These tests cover the argv-validation paths that exit early without ever
  * reaching `gh` — so they run hermetically in CI without GitHub auth or a
  * configured project. The `gh`-touching paths (`related <n>` with valid n,
- * `move-status <itemId> <Status>`) are exercised in production runs and are
- * not unit-tested here.
+ * `move-status <itemId> <Status>`, `unblock-dependents <n>`) are exercised
+ * in production runs and are not unit-tested here.
  */
 import { strict as assert } from "node:assert"
 import { spawnSync } from "node:child_process"
@@ -24,7 +24,7 @@ describe("project-cli argv validation", () => {
     const r = cli()
     assert.equal(r.status, 2)
     assert.match(r.stderr, /Unknown subcommand/)
-    assert.match(r.stderr, /Available: related, move-status/)
+    assert.match(r.stderr, /Available: related, move-status, unblock-dependents/)
   })
 
   it("prints usage and exits 2 for an unknown subcommand", () => {
@@ -86,6 +86,39 @@ describe("project-cli argv validation", () => {
 
   it("rejects 'move-status' with a status name in the wrong case (status names are case-sensitive)", () => {
     const r = cli("move-status", "PVTI_x", "todo")
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Usage:/)
+  })
+
+  it("rejects 'unblock-dependents' without an argument", () => {
+    const r = cli("unblock-dependents")
+    assert.equal(r.status, 2)
+    assert.match(
+      r.stderr,
+      /Usage: bun \.sandcastle\/lib\/project-cli\.ts unblock-dependents <issue-number>/,
+    )
+  })
+
+  it("rejects 'unblock-dependents' with a non-numeric argument", () => {
+    const r = cli("unblock-dependents", "not-a-number")
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Usage:/)
+  })
+
+  it("rejects 'unblock-dependents' with a non-positive integer (zero)", () => {
+    const r = cli("unblock-dependents", "0")
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Usage:/)
+  })
+
+  it("rejects 'unblock-dependents' with a negative integer", () => {
+    const r = cli("unblock-dependents", "-3")
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Usage:/)
+  })
+
+  it("rejects 'unblock-dependents' with a decimal", () => {
+    const r = cli("unblock-dependents", "1.5")
     assert.equal(r.status, 2)
     assert.match(r.stderr, /Usage:/)
   })

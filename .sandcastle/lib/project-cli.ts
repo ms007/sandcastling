@@ -3,9 +3,12 @@
  * sandbox via `bun .sandcastle/lib/project-cli.ts <subcommand>`. Bun runs
  * the source directly — no build step, no bundle artifact, source = binary.
  *
- * Two subcommands:
+ * Three subcommands:
  *   - `related <issueNumber>`     — prints a `RelatedIssuesReport` as JSON.
  *   - `move-status <itemId> <Todo | "In Progress" | "In Review" | Done>`
+ *   - `unblock-dependents <issueNumber>` — drops the "blocked by #N" edge
+ *     from every issue currently blocked by N. Run this when N lands in
+ *     Done so its mergees are no longer parked behind it.
  *
  * Both auto-discover repo + project on each invocation. That's two extra `gh`
  * calls per use, but it keeps the CLI stateless (no env-var plumbing) and the
@@ -21,6 +24,7 @@ import {
   getRelatedIssues,
   moveStatus,
   resolveProject,
+  unblockDependents,
 } from "./project.ts"
 
 const execFileP = promisify(execFile)
@@ -73,8 +77,28 @@ async function main(): Promise<void> {
     return
   }
 
+  if (subcommand === "unblock-dependents") {
+    const arg = rest[0]
+    const num = arg ? Number(arg) : Number.NaN
+    if (!Number.isInteger(num) || num <= 0) {
+      console.error("Usage: bun .sandcastle/lib/project-cli.ts unblock-dependents <issue-number>")
+      process.exit(2)
+    }
+    const { owner, repo } = await detectRepo()
+    const project = await resolveProject(owner, repo)
+    const unblocked = await unblockDependents(project, num)
+    if (unblocked.length === 0) {
+      console.log(`No open issues were blocked by #${num}.`)
+    } else {
+      console.log(
+        `Unblocked ${unblocked.length} issue(s): ${unblocked.map((n) => `#${n}`).join(", ")}`,
+      )
+    }
+    return
+  }
+
   console.error(`Unknown subcommand: ${subcommand ?? "(none)"}`)
-  console.error("Available: related, move-status")
+  console.error("Available: related, move-status, unblock-dependents")
   process.exit(2)
 }
 

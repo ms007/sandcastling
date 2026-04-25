@@ -391,6 +391,64 @@ export function buildRelatedIssuesReport(
   }
 }
 
+/**
+ * Removes every "blocked by #issueNumber" dependency. Called when
+ * `issueNumber` lands in Done — its merge has shipped, so it is no longer
+ * holding anything up. Issues that were also blocked by *other* unfinished
+ * issues stay blocked (we only drop the edge to the freshly-Done one).
+ *
+ * Returns the issue numbers whose blocker was removed, in GraphQL order.
+ * An empty array means there was nothing blocked by this issue.
+ */
+export async function unblockDependents(
+  ctx: ProjectContext,
+  issueNumber: number,
+): Promise<readonly number[]> {
+  const data = await graphql<UnblockDependentsResponse>(
+    `
+      query ($owner: String!, $repo: String!, $issueNumber: Int!) {
+        repository(owner: $owner, name: $repo) {
+          issue(number: $issueNumber) {
+            id
+            blocking(first: 50) {
+              nodes {
+                id
+                number
+              }
+            }
+          }
+        }
+      }
+    `,
+    { owner: ctx.owner, repo: ctx.repo, issueNumber },
+  )
+
+  const issue = data.repository?.issue
+  if (!issue) {
+    throw new Error(`Issue #${issueNumber} not found in ${ctx.owner}/${ctx.repo}.`)
+  }
+
+  const dependents = issue.blocking.nodes
+  for (const dep of dependents) {
+    await graphql<unknown>(
+      `
+        mutation ($issueId: ID!, $blockingIssueId: ID!) {
+          removeBlockedBy(
+            input: { issueId: $issueId, blockingIssueId: $blockingIssueId }
+          ) {
+            issue {
+              id
+            }
+          }
+        }
+      `,
+      { issueId: dep.id, blockingIssueId: issue.id },
+    )
+  }
+
+  return dependents.map((d) => d.number)
+}
+
 export async function moveStatus(
   ctx: ProjectContext,
   itemId: string,
@@ -437,6 +495,17 @@ interface PickIssuesResponse {
   repository: {
     issues: {
       nodes: IssueNode[]
+    } | null
+  } | null
+}
+
+interface UnblockDependentsResponse {
+  repository: {
+    issue: {
+      id: string
+      blocking: {
+        nodes: readonly { id: string; number: number }[]
+      }
     } | null
   } | null
 }

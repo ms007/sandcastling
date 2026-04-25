@@ -21,8 +21,9 @@ tells you which siblings are eligible to bundle:
 bun .sandcastle/lib/project-cli.ts related {{ISSUE_NUMBER}}
 ```
 
-The output is JSON with `seed`, optional `parent`, and `siblings[]`. Each
-sibling carries an `eligible` flag and an `itemId` you will need in step 4.
+The output is JSON with `seed`, optional `parent`, `siblings[]`, and
+`children[]`. Each sibling and child carries an `eligible` flag and an
+`itemId` you will need in step 4.
 
 If the seed has a parent (PRD), pull it for wider context:
 
@@ -36,6 +37,31 @@ seriously considering, pull its body and comments before deciding:
 ```bash
 gh issue view <number> --comments
 ```
+
+## 1a. Treat a PRD seed as a pointer to its first eligible child
+
+A PRD (the umbrella issue) is itself almost never `eligible` — it has no
+`sandcastle` label and is not on the board. Its child implementation
+slices are. If **both** of the following hold:
+
+- The seed is `eligible: false`.
+- `children[]` contains at least one entry with `eligible: true`.
+
+then treat the **first** eligible child (lowest issue number) as the
+*effective seed* for steps 2–5. The remaining `eligible: true` children
+play the role of siblings for the bundling decision in step 2.
+
+Use the data already in `children[]` — it carries `number`, `title`,
+`itemId`, `eligible`, etc. **Do not** call `related` a second time, and do
+not pivot recursively (even if the chosen child itself had children, you
+stop here).
+
+For step 3, the original PRD seed is the parent of every chosen bundle
+item, so the branch name is `sandcastle/prd-<original-seed-number>`.
+
+If the seed is `eligible: false` and `children[]` has no eligible entry,
+do **not** pivot — fall through to the failure rule at the bottom of this
+file.
 
 ## 2. Decide the bundle
 
@@ -107,6 +133,7 @@ double quotes everywhere, no trailing commas.
   status mutations in step 4.
 - Code, comments, and any commentary in **English**.
 - If the seed itself is not eligible (e.g. blocked, missing label, not on
-  the board), do not emit `<plan>` — explain in prose what's wrong and exit.
+  the board) **and** the auto-pivot in step 1a does not apply (no eligible
+  children), do not emit `<plan>` — explain in prose what's wrong and exit.
   The orchestrator will treat the absence of `<plan>` as a planner failure
   and skip the rest of the run.

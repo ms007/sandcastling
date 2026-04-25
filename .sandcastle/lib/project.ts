@@ -76,11 +76,20 @@ export interface RelatedIssuesReport {
   readonly parent: RelatedIssueWithBody | null;
   /** Sub-issues of `parent` other than the seed. Empty when no parent. */
   readonly siblings: readonly RelatedIssue[];
+  /**
+   * Sub-issues of the seed itself. Non-empty when the seed is a PRD whose
+   * implementation slices live as child issues. The planner uses this to
+   * auto-pivot from a PRD seed to its oldest eligible child.
+   */
+  readonly children: readonly RelatedIssue[];
 }
 
 // ---------- Public API -----------------------------------------------------
 
-export async function resolveProject(owner: string, repo: string): Promise<ProjectContext> {
+export async function resolveProject(
+  owner: string,
+  repo: string,
+): Promise<ProjectContext> {
   const data = await graphql<ResolveProjectResponse>(
     `
       query ($owner: String!, $repo: String!) {
@@ -119,7 +128,9 @@ export async function resolveProject(owner: string, repo: string): Promise<Proje
     );
   }
   if (candidates.length > 1) {
-    const titles = candidates.map((p) => `#${p.number} "${p.title}"`).join(", ");
+    const titles = candidates
+      .map((p) => `#${p.number} "${p.title}"`)
+      .join(", ");
     throw new Error(
       `Multiple Project v2 with a matching Status schema linked to ${owner}/${repo}: ${titles}. Auto-discovery requires exactly one.`,
     );
@@ -131,7 +142,9 @@ export async function resolveProject(owner: string, repo: string): Promise<Proje
     // strict `noUncheckedIndexedAccess`.
     throw new Error("internal: candidate project disappeared after filter");
   }
-  const statusField = project.fields.nodes.find((f): f is StatusField => isStatusField(f));
+  const statusField = project.fields.nodes.find((f): f is StatusField =>
+    isStatusField(f),
+  );
   if (!statusField) {
     // Defensive — `hasStatusSchema` already proved this exists.
     throw new Error("internal: status field disappeared after filter");
@@ -150,7 +163,9 @@ export async function resolveProject(owner: string, repo: string): Promise<Proje
   };
 }
 
-export async function pickNextEligibleIssue(ctx: ProjectContext): Promise<EligibleIssue | null> {
+export async function pickNextEligibleIssue(
+  ctx: ProjectContext,
+): Promise<EligibleIssue | null> {
   const data = await graphql<PickIssuesResponse>(
     `
       query ($owner: String!, $repo: String!) {
@@ -204,11 +219,14 @@ export async function pickNextEligibleIssue(ctx: ProjectContext): Promise<Eligib
   for (const issue of issues) {
     if (issue.issueDependenciesSummary.blockedBy > 0) continue;
 
-    const projectItem = issue.projectItems.nodes.find((item) => item.project.id === ctx.projectId);
+    const projectItem = issue.projectItems.nodes.find(
+      (item) => item.project.id === ctx.projectId,
+    );
     if (!projectItem) continue;
 
     const statusValue = projectItem.fieldValues.nodes.find(
-      (v): v is StatusFieldValue => v != null && "field" in v && v.field?.id === ctx.statusFieldId,
+      (v): v is StatusFieldValue =>
+        v != null && "field" in v && v.field?.id === ctx.statusFieldId,
     );
     if (statusValue?.optionId !== todoOptionId) continue;
 
@@ -234,13 +252,10 @@ export async function getRelatedIssues(
         repository(owner: $owner, name: $repo) {
           issue(number: $issueNumber) {
             ${ISSUE_FULL_FIELDS}
+            ${SUB_ISSUES_FRAGMENT}
             parent {
               ${ISSUE_FULL_FIELDS}
-              subIssues(first: 50) {
-                nodes {
-                  ${ISSUE_META_FIELDS}
-                }
-              }
+              ${SUB_ISSUES_FRAGMENT}
             }
           }
         }
@@ -251,16 +266,22 @@ export async function getRelatedIssues(
 
   const issue = data.repository?.issue;
   if (!issue) {
-    throw new Error(`Issue #${seedNumber} not found in ${ctx.owner}/${ctx.repo}.`);
+    throw new Error(
+      `Issue #${seedNumber} not found in ${ctx.owner}/${ctx.repo}.`,
+    );
   }
 
   const parent = issue.parent ?? null;
-  const siblings = (parent?.subIssues?.nodes ?? []).filter((s) => s.number !== seedNumber);
+  const siblings = (parent?.subIssues?.nodes ?? []).filter(
+    (s) => s.number !== seedNumber,
+  );
+  const children = issue.subIssues?.nodes ?? [];
 
   return {
     seed: toRelatedIssueWithBody(issue, ctx),
     parent: parent ? toRelatedIssueWithBody(parent, ctx) : null,
     siblings: siblings.map((s) => toRelatedIssue(s, ctx)),
+    children: children.map((c) => toRelatedIssue(c, ctx)),
   };
 }
 
@@ -370,11 +391,20 @@ const ISSUE_FULL_FIELDS = `
   ${ISSUE_META_FIELDS}
 `;
 
+const SUB_ISSUES_FRAGMENT = `
+  subIssues(first: 50) {
+    nodes {
+      ${ISSUE_META_FIELDS}
+    }
+  }
+`;
+
 interface RelatedIssueNode extends IssueNode {
   labels: { nodes: { name: string }[] };
 }
 
 interface RelatedIssueWithSubsNode extends RelatedIssueNode {
+  subIssues?: { nodes: RelatedIssueNode[] } | null;
   parent?: RelatedParentNode | null;
 }
 
@@ -388,29 +418,47 @@ interface RelatedIssuesResponse {
   } | null;
 }
 
-function toRelatedIssue(node: RelatedIssueNode, ctx: ProjectContext): RelatedIssue {
-  const item = node.projectItems.nodes.find((n) => n.project.id === ctx.projectId);
+function toRelatedIssue(
+  node: RelatedIssueNode,
+  ctx: ProjectContext,
+): RelatedIssue {
+  const item = node.projectItems.nodes.find(
+    (n) => n.project.id === ctx.projectId,
+  );
   const status = item ? readStatus(item, ctx) : null;
   const blockedByCount = node.issueDependenciesSummary.blockedBy;
-  const hasSandcastleLabel = node.labels.nodes.some((l) => l.name === "sandcastle");
+  const hasSandcastleLabel = node.labels.nodes.some(
+    (l) => l.name === "sandcastle",
+  );
   return {
     number: node.number,
     title: node.title,
     itemId: item?.id ?? null,
     status,
-    eligible: item != null && status === "Todo" && hasSandcastleLabel && blockedByCount === 0,
+    eligible:
+      item != null &&
+      status === "Todo" &&
+      hasSandcastleLabel &&
+      blockedByCount === 0,
     blockedByCount,
     hasSandcastleLabel,
   };
 }
 
-function toRelatedIssueWithBody(node: RelatedIssueNode, ctx: ProjectContext): RelatedIssueWithBody {
+function toRelatedIssueWithBody(
+  node: RelatedIssueNode,
+  ctx: ProjectContext,
+): RelatedIssueWithBody {
   return { ...toRelatedIssue(node, ctx), body: node.body };
 }
 
-function readStatus(item: ProjectItemNode, ctx: ProjectContext): StatusName | null {
+function readStatus(
+  item: ProjectItemNode,
+  ctx: ProjectContext,
+): StatusName | null {
   const value = item.fieldValues.nodes.find(
-    (v): v is StatusFieldValue => v != null && "field" in v && v.field?.id === ctx.statusFieldId,
+    (v): v is StatusFieldValue =>
+      v != null && "field" in v && v.field?.id === ctx.statusFieldId,
   );
   if (!value) return null;
   for (const name of REQUIRED_STATUSES) {
@@ -432,8 +480,15 @@ interface StatusFieldValue {
   field: { id: string; name: string };
 }
 
-function isStatusField(f: StatusField | Record<string, never>): f is StatusField {
-  return "name" in f && "options" in f && f.name === "Status" && Array.isArray(f.options);
+function isStatusField(
+  f: StatusField | Record<string, never>,
+): f is StatusField {
+  return (
+    "name" in f &&
+    "options" in f &&
+    f.name === "Status" &&
+    Array.isArray(f.options)
+  );
 }
 
 function hasStatusSchema(project: ProjectV2Node): boolean {
@@ -443,20 +498,27 @@ function hasStatusSchema(project: ProjectV2Node): boolean {
   return REQUIRED_STATUSES.every((name) => optionNames.has(name));
 }
 
-function mapStatusOptions(options: { id: string; name: string }[]): Record<StatusName, string> {
+function mapStatusOptions(
+  options: { id: string; name: string }[],
+): Record<StatusName, string> {
   const byName = new Map(options.map((o) => [o.name, o.id]));
   const out: Partial<Record<StatusName, string>> = {};
   for (const name of REQUIRED_STATUSES) {
     const id = byName.get(name);
     if (!id) {
-      throw new Error(`internal: missing Status option "${name}" after schema check`);
+      throw new Error(
+        `internal: missing Status option "${name}" after schema check`,
+      );
     }
     out[name] = id;
   }
   return out as Record<StatusName, string>;
 }
 
-async function graphql<T>(query: string, variables: Record<string, string | number>): Promise<T> {
+async function graphql<T>(
+  query: string,
+  variables: Record<string, string | number>,
+): Promise<T> {
   const args = ["api", "graphql", "-f", `query=${query}`];
   for (const [k, v] of Object.entries(variables)) {
     // `-F` sends typed (number/bool); `-f` sends string. GraphQL `Int!`

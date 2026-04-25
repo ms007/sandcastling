@@ -1,10 +1,10 @@
 import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "./lib/index.ts";
+import { claudeCustom, docker } from "./lib/index.ts";
 
 const result = await sandcastle.run({
   sandbox: docker(),
   name: "Smoke",
-  agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+  agent: claudeCustom("claude-sonnet-4-6"),
   promptFile: "./.sandcastle/prompts/sample.md",
   branchStrategy: { type: "branch", branch: "smoke" },
   hooks: {

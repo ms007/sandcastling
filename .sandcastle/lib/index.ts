@@ -11,3 +11,4 @@ export {
   type VolumeMount,
   type WorkspaceVolumeNames,
 } from "./volumes.ts";
+export { claudeCustom } from "./agent.ts";

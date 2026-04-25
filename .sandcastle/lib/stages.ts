@@ -11,7 +11,7 @@ export interface PlannedIssue {
 }
 
 const COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
-const AGENT_MODEL = "claude-sonnet-4-6";
+const AGENT_MODEL = "claude-opus-4-6";
 const INSTALL_HOOKS = {
   sandbox: {
     onSandboxReady: [{ command: "pnpm install --prefer-offline" }],

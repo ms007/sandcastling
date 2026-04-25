@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build artifacts
+dist/
+*.tsbuildinfo
+
+# sandcastle runtime
+.sandcastle/.env
+.sandcastle/logs/
+.sandcastle/worktrees/
+worktrees/
+
+# env / secrets
+.env
+.env.local
+*.local
+
+# logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/

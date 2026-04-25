@@ -1,0 +1,33 @@
+{
+  "name": "sandcastling",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.31.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "smoke": "tsx .sandcastle/main.ts",
+    "build:image": "docker build -t sandcastle:smoke .sandcastle",
+    "clean": "docker volume rm -f sandcastle-smoke-node-modules sandcastle-smoke-pnpm-store",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "verify": "pnpm typecheck && pnpm check"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@ai-hero/sandcastle": "latest",
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

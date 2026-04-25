@@ -14,11 +14,15 @@ related issues belong with the seed.
 
 </seed-issue>
 
-<related-issues>
+Pull the project-board snapshot for the seed and its siblings yourself — it
+tells you which siblings are eligible to bundle:
 
-!`pnpm sand:project related {{ISSUE_NUMBER}}`
+```bash
+bun .sandcastle/lib/project-cli.ts related {{ISSUE_NUMBER}}
+```
 
-</related-issues>
+The output is JSON with `seed`, optional `parent`, and `siblings[]`. Each
+sibling carries an `eligible` flag and an `itemId` you will need in step 4.
 
 If the seed has a parent (PRD), pull it for wider context:
 
@@ -26,8 +30,8 @@ If the seed has a parent (PRD), pull it for wider context:
 gh issue view <parent-number>
 ```
 
-For each `eligible: true` sibling that you are seriously considering, pull
-its body and comments before deciding:
+For each `eligible: true` sibling in the `related` output that you are
+seriously considering, pull its body and comments before deciding:
 
 ```bash
 gh issue view <number> --comments
@@ -40,8 +44,8 @@ and good — do not pad.
 
 Include a sibling **only if all** of these hold:
 
-- It is `eligible: true` in `<related-issues>` (on the project board, has the
-  `sandcastle` label, Status=Todo, no unresolved blockers).
+- It is `eligible: true` in the `related` output (on the project board, has
+  the `sandcastle` label, Status=Todo, no unresolved blockers).
 - It is *tightly* coupled to the seed: same module, shared types, the test
   for one would naturally live in the same file as the implementation of
   the other, or one would create merge conflicts with the other if
@@ -69,11 +73,11 @@ Apply this rule deterministically — do not paraphrase:
 For **each** issue in your final bundle, run exactly:
 
 ```bash
-pnpm sand:project move-status <itemId> "In Progress"
+bun .sandcastle/lib/project-cli.ts move-status <itemId> "In Progress"
 ```
 
-Use the exact `itemId` from `<related-issues>`. The command is idempotent —
-re-running on an already-moved item is safe.
+Use the exact `itemId` from the `related` output. The command is idempotent
+— re-running on an already-moved item is safe.
 
 Do **not** emit the plan tag until every item has been claimed.
 

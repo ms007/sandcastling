@@ -73,7 +73,7 @@ Check the diff covers its acceptance criteria. If an issue is not
 adequately covered, **roll its status back** to `In Progress`:
 
 ```bash
-pnpm sand:project move-status <itemId> "In Progress"
+bun .sandcastle/lib/project-cli.ts move-status <itemId> "In Progress"
 ```
 
 …and leave a comment on the issue explaining what's still missing:

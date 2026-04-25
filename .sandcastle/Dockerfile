@@ -26,8 +26,13 @@ USER agent
 # Install Claude Code CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Add Claude + Corepack shims to PATH
-ENV PATH="/home/agent/.local/bin:$PATH"
+# Install Bun. Used by agent prompts to invoke `.sandcastle/lib/project-cli.ts`
+# directly (e.g. `bun .sandcastle/lib/project-cli.ts related <n>`) without a
+# package-manager layer in between. Source = executable, no build step.
+RUN curl -fsSL https://bun.sh/install | bash
+
+# Add Claude + Bun + Corepack shims to PATH
+ENV PATH="/home/agent/.local/bin:/home/agent/.bun/bin:$PATH"
 ENV PNPM_HOME="/home/agent/.local/share/pnpm"
 
 # Enable pnpm via Corepack. Version pinned in the host's package.json

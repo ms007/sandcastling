@@ -88,7 +88,7 @@ multiple logical chunks — each must be self-contained and verified.
 Once **all** of the issue's commits are in place AND `pnpm verify` is green:
 
 ```bash
-pnpm sand:project move-status <itemId> "In Review"
+bun .sandcastle/lib/project-cli.ts move-status <itemId> "In Review"
 ```
 
 Use the exact `itemId` from the bundle list at the top of this prompt.

@@ -22,7 +22,7 @@ import { promisify } from "node:util"
 
 const execFileP = promisify(execFile)
 
-const REQUIRED_STATUSES = ["Todo", "In Progress", "In Review", "Done"] as const
+export const REQUIRED_STATUSES = ["Todo", "In Progress", "In Review", "Done"] as const
 
 export type StatusName = (typeof REQUIRED_STATUSES)[number]
 
@@ -84,6 +84,58 @@ export interface RelatedIssuesReport {
   readonly children: readonly RelatedIssue[]
 }
 
+// ---------- GraphQL response types (exported for test fixtures) ------------
+
+export interface ProjectV2Node {
+  readonly id: string
+  readonly number: number
+  readonly title: string
+  readonly fields: {
+    readonly nodes: readonly (StatusField | Record<string, never>)[]
+  }
+}
+
+export interface StatusField {
+  readonly id: string
+  readonly name: string
+  readonly options: readonly { readonly id: string; readonly name: string }[]
+}
+
+export interface IssueNode {
+  readonly number: number
+  readonly title: string
+  readonly body: string
+  readonly id: string
+  readonly issueDependenciesSummary: { readonly blockedBy: number }
+  readonly projectItems: { readonly nodes: readonly ProjectItemNode[] }
+}
+
+export interface RelatedIssueNode extends IssueNode {
+  readonly labels: { readonly nodes: readonly { readonly name: string }[] }
+}
+
+export interface RelatedIssueWithSubsNode extends RelatedIssueNode {
+  readonly subIssues?: { readonly nodes: readonly RelatedIssueNode[] } | null
+  readonly parent?: RelatedParentNode | null
+}
+
+export interface RelatedParentNode extends RelatedIssueNode {
+  readonly subIssues: { readonly nodes: readonly RelatedIssueNode[] }
+}
+
+export interface ProjectItemNode {
+  readonly id: string
+  readonly project: { readonly id: string }
+  readonly fieldValues: {
+    readonly nodes: readonly (StatusFieldValue | Record<string, never> | null)[]
+  }
+}
+
+export interface StatusFieldValue {
+  readonly optionId: string
+  readonly field: { readonly id: string; readonly name: string } | null
+}
+
 // ---------- Public API -----------------------------------------------------
 
 export async function resolveProject(owner: string, repo: string): Promise<ProjectContext> {
@@ -117,6 +169,19 @@ export async function resolveProject(owner: string, repo: string): Promise<Proje
   )
 
   const projects = data.repository?.projectsV2?.nodes ?? []
+  return buildProjectContext(owner, repo, projects)
+}
+
+/**
+ * Pure derivation of {@link ProjectContext} from a list of GraphQL project
+ * nodes. Throws when zero or more than one project carries the canonical
+ * Status schema — auto-discovery requires exactly one.
+ */
+export function buildProjectContext(
+  owner: string,
+  repo: string,
+  projects: readonly ProjectV2Node[],
+): ProjectContext {
   const candidates = projects.filter((p) => hasStatusSchema(p))
 
   if (candidates.length === 0) {
@@ -205,18 +270,24 @@ export async function pickNextEligibleIssue(ctx: ProjectContext): Promise<Eligib
   )
 
   const issues = data.repository?.issues?.nodes ?? []
-  const todoOptionId = ctx.statusOptions.Todo
+  return selectNextEligibleIssue(ctx, issues)
+}
 
+/**
+ * Pure picker: the first issue (input is in CREATED_AT-asc order) that is on
+ * the configured project, in `Todo`, and unblocked. Returns `null` when no
+ * candidate qualifies.
+ */
+export function selectNextEligibleIssue(
+  ctx: ProjectContext,
+  issues: readonly IssueNode[],
+): EligibleIssue | null {
   for (const issue of issues) {
     if (issue.issueDependenciesSummary.blockedBy > 0) continue
 
     const projectItem = issue.projectItems.nodes.find((item) => item.project.id === ctx.projectId)
     if (!projectItem) continue
-
-    const statusValue = projectItem.fieldValues.nodes.find(
-      (v): v is StatusFieldValue => v != null && "field" in v && v.field?.id === ctx.statusFieldId,
-    )
-    if (statusValue?.optionId !== todoOptionId) continue
+    if (readStatus(projectItem, ctx) !== "Todo") continue
 
     return {
       number: issue.number,
@@ -257,6 +328,19 @@ export async function getRelatedIssues(
     throw new Error(`Issue #${seedNumber} not found in ${ctx.owner}/${ctx.repo}.`)
   }
 
+  return buildRelatedIssuesReport(ctx, seedNumber, issue)
+}
+
+/**
+ * Pure transform: shape a {@link RelatedIssueWithSubsNode} (raw GraphQL
+ * payload) into the structured report the planner consumes. Filters the seed
+ * out of `parent.subIssues` so the seed never appears in `siblings`.
+ */
+export function buildRelatedIssuesReport(
+  ctx: ProjectContext,
+  seedNumber: number,
+  issue: RelatedIssueWithSubsNode,
+): RelatedIssuesReport {
   const parent = issue.parent ?? null
   const siblings = (parent?.subIssues?.nodes ?? []).filter((s) => s.number !== seedNumber)
   const children = issue.subIssues?.nodes ?? []
@@ -311,36 +395,12 @@ interface ResolveProjectResponse {
   } | null
 }
 
-interface ProjectV2Node {
-  id: string
-  number: number
-  title: string
-  fields: { nodes: (StatusField | Record<string, never>)[] }
-}
-
-interface StatusField {
-  id: string
-  name: string
-  options: { id: string; name: string }[]
-}
-
 interface PickIssuesResponse {
   repository: {
     issues: {
       nodes: IssueNode[]
     } | null
   } | null
-}
-
-interface IssueNode {
-  number: number
-  title: string
-  body: string
-  id: string
-  issueDependenciesSummary: { blockedBy: number }
-  projectItems: {
-    nodes: ProjectItemNode[]
-  }
 }
 
 const ISSUE_META_FIELDS = `
@@ -383,19 +443,6 @@ const SUB_ISSUES_FRAGMENT = `
   }
 `
 
-interface RelatedIssueNode extends IssueNode {
-  labels: { nodes: { name: string }[] }
-}
-
-interface RelatedIssueWithSubsNode extends RelatedIssueNode {
-  subIssues?: { nodes: RelatedIssueNode[] } | null
-  parent?: RelatedParentNode | null
-}
-
-interface RelatedParentNode extends RelatedIssueNode {
-  subIssues: { nodes: RelatedIssueNode[] }
-}
-
 interface RelatedIssuesResponse {
   repository: {
     issue: RelatedIssueWithSubsNode | null
@@ -433,19 +480,6 @@ function readStatus(item: ProjectItemNode, ctx: ProjectContext): StatusName | nu
   return null
 }
 
-interface ProjectItemNode {
-  id: string
-  project: { id: string }
-  fieldValues: {
-    nodes: (StatusFieldValue | Record<string, never> | null)[]
-  }
-}
-
-interface StatusFieldValue {
-  optionId: string
-  field: { id: string; name: string }
-}
-
 function isStatusField(f: StatusField | Record<string, never>): f is StatusField {
   return "name" in f && "options" in f && f.name === "Status" && Array.isArray(f.options)
 }
@@ -457,7 +491,9 @@ function hasStatusSchema(project: ProjectV2Node): boolean {
   return REQUIRED_STATUSES.every((name) => optionNames.has(name))
 }
 
-function mapStatusOptions(options: { id: string; name: string }[]): Record<StatusName, string> {
+function mapStatusOptions(
+  options: readonly { id: string; name: string }[],
+): Record<StatusName, string> {
   const byName = new Map(options.map((o) => [o.name, o.id]))
   const out: Partial<Record<StatusName, string>> = {}
   for (const name of REQUIRED_STATUSES) {
@@ -488,4 +524,14 @@ async function graphql<T>(query: string, variables: Record<string, string | numb
     throw new Error("gh api graphql returned no data")
   }
   return parsed.data
+}
+
+/** Test seam — internal helpers exposed for unit tests. Not a public API. */
+export const __testing = {
+  isStatusField,
+  hasStatusSchema,
+  mapStatusOptions,
+  readStatus,
+  toRelatedIssue,
+  toRelatedIssueWithBody,
 }

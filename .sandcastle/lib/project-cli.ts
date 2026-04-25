@@ -13,11 +13,17 @@
  */
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { type StatusName, getRelatedIssues, moveStatus, resolveProject } from "./project.ts"
+import {
+  REQUIRED_STATUSES,
+  type StatusName,
+  getRelatedIssues,
+  moveStatus,
+  resolveProject,
+} from "./project.ts"
 
 const execFileP = promisify(execFile)
 
-const STATUS_NAMES = new Set<StatusName>(["Todo", "In Progress", "In Review", "Done"])
+const STATUS_NAMES = new Set<StatusName>(REQUIRED_STATUSES)
 
 async function detectRepo(): Promise<{ owner: string; repo: string }> {
   const { stdout } = await execFileP("gh", ["repo", "view", "--json", "owner,name"])

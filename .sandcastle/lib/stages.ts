@@ -32,6 +32,31 @@ const issuePromptArgs = (issue: PlannedIssue) => ({
 })
 
 /**
+ * Parse the planner agent's stdout into a planned-issue list.
+ *
+ * - Returns the parsed `issues` array when a valid `<plan>` tag is present.
+ * - Returns an empty array on `iteration > 1` when no `<plan>` tag is present
+ *   (the planner has signalled "done").
+ * - Throws on `iteration === 1` when the tag is missing or the issue list is
+ *   empty — a fresh run cannot start without work.
+ */
+export const parsePlannerOutput = (stdout: string, iteration: number): readonly PlannedIssue[] => {
+  const planJson = stdout.match(/<plan>([\s\S]*?)<\/plan>/)?.[1]
+  if (!planJson) {
+    if (iteration === 1) {
+      throw new Error(`Planner did not produce a <plan> tag.\n\n${stdout}`)
+    }
+    return []
+  }
+
+  const { issues } = JSON.parse(planJson) as { issues: PlannedIssue[] }
+  if (iteration === 1 && issues.length === 0) {
+    throw new Error("Planner returned an empty issue list on first run.")
+  }
+  return issues
+}
+
+/**
  * Returns the planned issues. An empty array means the planner signalled
  * "done" — either by emitting an empty `<plan>` or by omitting the tag.
  * On the first iteration both are fatal: the run cannot start without work.
@@ -51,19 +76,7 @@ export const runPlanner = async ({
     promptArgs: { ISSUE_NUMBER: String(issueNumber) },
   })
 
-  const planJson = result.stdout.match(/<plan>([\s\S]*?)<\/plan>/)?.[1]
-  if (!planJson) {
-    if (iteration === 1) {
-      throw new Error(`Planner did not produce a <plan> tag.\n\n${result.stdout}`)
-    }
-    return []
-  }
-
-  const { issues } = JSON.parse(planJson) as { issues: PlannedIssue[] }
-  if (iteration === 1 && issues.length === 0) {
-    throw new Error("Planner returned an empty issue list on first run.")
-  }
-  return issues
+  return parsePlannerOutput(result.stdout, iteration)
 }
 
 export const createIssueSandbox = (issue: PlannedIssue): Promise<sandcastle.Sandbox> =>
@@ -141,3 +154,6 @@ export const runMerger = async ({
     hooks: INSTALL_HOOKS,
   })
 }
+
+/** Test seam — internal helpers exposed for unit tests. Not a public API. */
+export const __testing = { issuePromptArgs }

@@ -4,23 +4,22 @@
  * prompt with the contents of `.sandcastle/prompts/system.md`.
  *
  * The path is resolved relative to the current working directory; this assumes
- * the script is launched from the project root (which `pnpm smoke` guarantees).
+ * the script is launched from the project root (which `pnpm sandcastle` guarantees).
  */
 import { readFileSync } from "node:fs"
 import * as sandcastle from "@ai-hero/sandcastle"
 
 const SYSTEM_PROMPT_PATH = "./.sandcastle/prompts/system.md"
 
+let cachedSystemPrompt: string | undefined
+
 const shellEscape = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
 
-export const claudeCustom = (
-  model: string,
-  options?: sandcastle.ClaudeCodeOptions,
+export const wrapAgentProvider = (
+  base: sandcastle.AgentProvider,
+  systemPrompt: string,
 ): sandcastle.AgentProvider => {
-  const systemPrompt = readFileSync(SYSTEM_PROMPT_PATH, "utf8")
-  const base = sandcastle.claudeCode(model, options)
   const flag = ` --system-prompt ${shellEscape(systemPrompt)}`
-
   const baseInteractive = base.buildInteractiveArgs
 
   return {
@@ -48,3 +47,14 @@ export const claudeCustom = (
     }),
   }
 }
+
+export const claudeCustom = (
+  model: string,
+  options?: sandcastle.ClaudeCodeOptions,
+): sandcastle.AgentProvider => {
+  cachedSystemPrompt ??= readFileSync(SYSTEM_PROMPT_PATH, "utf8")
+  return wrapAgentProvider(sandcastle.claudeCode(model, options), cachedSystemPrompt)
+}
+
+/** Test seam — internal helpers exposed for unit tests. Not a public API. */
+export const __testing = { shellEscape }

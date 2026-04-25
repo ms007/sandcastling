@@ -248,3 +248,11 @@ function bindMountFlags(mounts: BindMountCreateOptions["mounts"]): string[] {
 function volumeFlags(volumes: readonly VolumeMount[]): string[] {
   return volumes.flatMap((v) => ["-v", `${v.volumeName}:${v.sandboxPath}`])
 }
+
+/** Test seam — internal helpers exposed for unit tests. Not a public API. */
+export const __testing = {
+  envFlags,
+  bindMountFlags,
+  volumeFlags,
+  resolveWorktreePath,
+}

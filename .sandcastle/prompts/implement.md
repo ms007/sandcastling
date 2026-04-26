@@ -18,11 +18,12 @@ do not pull in adjacent fixes or refactors.
 
 <recent-commits>
 
-!`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
+!`git log --oneline -n 10`
 
 </recent-commits>
 
-If the issue references a parent (PRD), pull it for wider context:
+Only if the issue itself does not give you enough context, pull the
+parent PRD:
 
 ```bash
 gh issue view <parent-number>
@@ -32,8 +33,38 @@ gh issue view <parent-number>
 
 ## 1. Explore the relevant code
 
+<<<<<<< Updated upstream
 Read the codebase before changing it. Pay extra attention to test files
 that exercise the area you are about to touch.
+=======
+Goal: enough context to implement the issue correctly — but no
+exploration for its own sake.
+
+- Start with the files the issue (or a linked PRD) explicitly names.
+  Reading the test file that covers the affected module alongside is
+  expected — it's the most compact behavior contract you'll get.
+- Expand only with a concrete open question (e.g. "where is X
+  called?"). Use targeted `Grep` for the symbol — not directory
+  listings, not `find`, not recursive `ls`, not `Glob '**/*'`. The repo
+  layout is irrelevant to the task.
+- Do **not** re-fetch context the prompt already inlines (the issue
+  body, recent commits) and do not enumerate the workspace to "see what
+  the project looks like".
+- **Avoid the Explore subagent when the issue already names files or is
+  scoped to a single module.** While a subagent runs, the parent emits
+  no tokens — long Explore runs count as agent idle time and risk a
+  10-minute timeout abort. Use it only for genuinely cross-cutting
+  searches you cannot answer with one or two `Grep`s.
+- Read a file in full only if you intend to modify it, derive a test
+  pattern from it, or use its types in your patch. Otherwise a targeted
+  range or `Grep` is enough.
+- Stop exploring as soon as you can write the first Red test. Further
+  reading should be triggered by a concrete question that arises during
+  implementation, not collected up front.
+- **Emit one short status line after every batch of tool calls.** The
+  harness aborts after 10 minutes of silence; long tool chains and
+  subagent runs without parent text count as silence.
+>>>>>>> Stashed changes
 
 ## 2. Implement (RGR where it applies)
 

@@ -1,6 +1,6 @@
 # TASK
 
-Merge the following issue branches into the current branch (HEAD), one at
+Merge the following issue branches into the current branch, one at
 a time, in the order listed:
 
 {{BRANCH_LIST}}
@@ -9,10 +9,11 @@ Each branch corresponds to one of these issues:
 
 {{ISSUE_LIST}}
 
-You are on the host's HEAD. The implementer + reviewer agents have already
-verified each branch in isolation. Your job is to fold them together,
-resolve conflicts intelligently, and confirm the result still passes
-`pnpm verify`.
+You are on a fresh worktree forked from {{BASE_LABEL}}. Merge each
+listed branch into the current branch without switching branches. The
+implementer + reviewer agents have already verified each branch in
+isolation. Your job is to fold them together, resolve conflicts
+intelligently, and confirm the result still passes `pnpm verify`.
 
 # CONTEXT
 
@@ -57,7 +58,7 @@ green.
 
 # RULES
 
-- Stay on the host's HEAD branch. Do not switch, push, or open a PR.
+- Stay on the current branch. Do not switch, push, or open a PR.
 - Code, comments, commit messages in **English**.
 - The sandbox already ran `pnpm install --prefer-offline`. Do not
   reinstall.

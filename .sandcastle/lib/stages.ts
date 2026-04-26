@@ -1,3 +1,4 @@
+import type { RunOptions } from "@ai-hero/sandcastle"
 import * as sandcastle from "@ai-hero/sandcastle"
 import { claudeCustom } from "./agent.ts"
 import { docker } from "./docker.ts"
@@ -96,29 +97,39 @@ export const runReviewer = async ({
   return parseReviewerVerdict(result.stdout)
 }
 
-export const runMerger = async ({
+interface MergerParams {
+  readonly issues: readonly IssueRef[]
+  readonly baseRef: BaseRef
+  readonly mergeBranch: string
+  readonly priorAttempts?: string
+  readonly model?: string
+}
+
+const buildMergerRunOptions = ({
   issues,
+  baseRef,
+  mergeBranch,
   priorAttempts = "",
   model = DEFAULT_AGENT_MODEL,
-}: {
-  issues: readonly IssueRef[]
-  priorAttempts?: string
-  model?: string
-}): Promise<void> => {
-  await sandcastle.run({
-    sandbox: docker(),
-    name: "Merger",
-    agent: claudeCustom(model),
-    promptFile: PROMPTS.merge,
-    promptArgs: {
-      BRANCH_LIST: issues.map((i) => `- ${i.branch}`).join("\n"),
-      ISSUE_LIST: issues.map((i) => `- #${i.number}: ${i.title}`).join("\n"),
-      PRIOR_ATTEMPTS: priorAttempts,
-    },
-    completionSignal: COMPLETION_SIGNALS.merge,
-    hooks: INSTALL_HOOKS,
-  })
+}: MergerParams): RunOptions => ({
+  sandbox: docker(),
+  name: "Merger",
+  agent: claudeCustom(model),
+  promptFile: PROMPTS.merge,
+  promptArgs: {
+    BRANCH_LIST: issues.map((i) => `- ${i.branch}`).join("\n"),
+    ISSUE_LIST: issues.map((i) => `- #${i.number}: ${i.title}`).join("\n"),
+    BASE_LABEL: formatBaseRef(baseRef),
+    PRIOR_ATTEMPTS: priorAttempts,
+  },
+  branchStrategy: { type: "branch", branch: mergeBranch, baseBranch: baseRef.sha },
+  completionSignal: COMPLETION_SIGNALS.merge,
+  hooks: INSTALL_HOOKS,
+})
+
+export const runMerger = async (params: MergerParams): Promise<void> => {
+  await sandcastle.run(buildMergerRunOptions(params))
 }
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */
-export const __testing = { issuePromptArgs }
+export const __testing = { issuePromptArgs, buildMergerRunOptions }

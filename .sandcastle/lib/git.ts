@@ -1,9 +1,21 @@
 import { execFileSync } from "node:child_process"
+import { randomBytes } from "node:crypto"
 
 export interface BaseRef {
   readonly sha: string
   readonly refName: string
 }
+
+/** Result of resolving a ref to a SHA. */
+export type ResolveRefResult =
+  | { readonly kind: "resolved"; readonly sha: string }
+  | { readonly kind: "missing" }
+
+/** Result of a compare-and-set fast-forward. */
+export type CasFFResult =
+  | { readonly kind: "ok" }
+  | { readonly kind: "moved"; readonly actualSha: string }
+  | { readonly kind: "missing" }
 
 export interface BranchCommit {
   readonly sha: string
@@ -52,7 +64,10 @@ export const captureBaseRef = (): BaseRef => ({
   refName: git("rev-parse", "--abbrev-ref", "HEAD"),
 })
 
-export const formatBaseRef = (ref: BaseRef): string => `${ref.refName} (${ref.sha.slice(0, 7)})`
+/** Conventional 7-char short SHA used in human-facing log lines. */
+export const shortSha = (sha: string): string => sha.slice(0, 7)
+
+export const formatBaseRef = (ref: BaseRef): string => `${ref.refName} (${shortSha(ref.sha)})`
 
 export const countCommitsAhead = (baseSha: string, branch: string): number => {
   // A missing local branch (expected before the implementer first runs) makes
@@ -96,4 +111,96 @@ export const readBranchInfo = (baseSha: string, branch: string, commitLimit = 20
         : { sha: line.slice(0, tab), subject: line.slice(tab + 1) }
     })
   return { name: branch, exists: true, aheadOfBase, headSha, commits }
+}
+
+/** Branch-name prefix for short-lived merger working branches. Single source of truth. */
+export const TMP_MERGE_PREFIX = "sandcastle/tmp-merge/"
+
+/**
+ * Generate a collision-resistant temporary merger branch name.
+ * Format: `<TMP_MERGE_PREFIX><seed>-<ISO-timestamp>-<random-suffix>`
+ *
+ * Two calls in the same second never collide thanks to the 6-byte random suffix.
+ */
+export const tempMergerBranchName = (seed: number): string => {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-")
+  const suffix = randomBytes(6).toString("hex")
+  return `${TMP_MERGE_PREFIX}${seed}-${ts}-${suffix}`
+}
+
+/**
+ * Resolve a branch name to its tip SHA.
+ * Returns `{ kind: "resolved", sha }` on success, `{ kind: "missing" }` when
+ * the branch does not exist.
+ */
+export const resolveRef = (refName: string): ResolveRefResult => {
+  const sha = tryGit("rev-parse", "--verify", `refs/heads/${refName}`)
+  if (sha === null) return { kind: "missing" }
+  return { kind: "resolved", sha }
+}
+
+/**
+ * Atomic compare-and-set fast-forward of a branch ref.
+ *
+ * Advances `branch` from `expectedSha` to `newSha` only when the current tip
+ * equals `expectedSha`. Uses `git update-ref` with the old-value check so the
+ * operation is atomic.
+ *
+ * Returns `{ kind: "ok" }` on success, `{ kind: "moved", actualSha }` when the
+ * branch has been updated by someone else, or `{ kind: "missing" }` when the
+ * branch does not exist.
+ */
+export const casFastForward = (
+  branch: string,
+  expectedSha: string,
+  newSha: string,
+): CasFFResult => {
+  const ref = `refs/heads/${branch}`
+  // Single subprocess on the happy path: update-ref's old-value guard already
+  // checks that current == expectedSha atomically. Only re-read the ref to
+  // distinguish missing vs. moved when the guard rejects.
+  if (tryGit("update-ref", ref, newSha, expectedSha) !== null) return { kind: "ok" }
+  const actual = tryGit("rev-parse", "--verify", ref)
+  if (actual === null) return { kind: "missing" }
+  return { kind: "moved", actualSha: actual }
+}
+
+/**
+ * Delete a branch safely. By default refuses to delete an unmerged branch
+ * (like `git branch -d`). Pass `force: true` to force-delete (like `git branch -D`).
+ *
+ * Returns `true` when the branch was deleted, `false` when it did not exist.
+ * Throws when the branch is unmerged and `force` is false.
+ */
+export const safeDeleteBranch = (branch: string, opts: { force?: boolean } = {}): boolean => {
+  // Pre-check existence so the "missing branch" path doesn't depend on a
+  // locale-specific stderr string from `git branch -d`.
+  if (resolveRef(branch).kind === "missing") return false
+  const flag = opts.force ? "-D" : "-d"
+  git("branch", flag, branch)
+  return true
+}
+
+/**
+ * List worktree checkout paths that have `branch` checked out.
+ * Returns an array of absolute paths (usually 0 or 1 element).
+ */
+export const listWorktreesForBranch = (branch: string): string[] => {
+  const out = tryGit("worktree", "list", "--porcelain")
+  if (out === null) return []
+  const paths: string[] = []
+  let currentPath: string | null = null
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      currentPath = line.slice("worktree ".length)
+    } else if (line.startsWith("branch refs/heads/")) {
+      const branchName = line.slice("branch refs/heads/".length)
+      if (branchName === branch && currentPath !== null) {
+        paths.push(currentPath)
+      }
+    } else if (line === "") {
+      currentPath = null
+    }
+  }
+  return paths
 }

@@ -10,6 +10,14 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import type * as sandcastle from "@ai-hero/sandcastle"
 import {
+  casFastForward,
+  listWorktreesForBranch,
+  resolveRef,
+  safeDeleteBranch,
+  shortSha,
+  tempMergerBranchName,
+} from "./git.ts"
+import {
   type BaseRef,
   DEFAULT_AGENT_MODEL,
   captureBaseRef,
@@ -85,7 +93,7 @@ export async function runOrchestrator(
 
   const deps: WorkflowDeps = {
     observe: buildObserveDeps(baseRef),
-    actions: buildActionDeps(ctx, baseRef, model, sandboxes),
+    actions: buildActionDeps(ctx, baseRef, seedNumber, model, sandboxes),
     hooks: { onTick: sink.onTick },
   }
 
@@ -178,9 +186,72 @@ function fetchMarkerCommentsSync(issueNumber: number): readonly MarkerComment[] 
     .map((c) => ({ body: c.body }))
 }
 
+/**
+ * After the merger sandbox returns, land the result on the developer's
+ * original branch via an atomic compare-and-set fast-forward.
+ *
+ * - Detached HEAD at run start: no ref update, temp branch preserved.
+ * - Base branch moved concurrently: throws, temp branch preserved.
+ * - Finally block: best-effort non-force delete of the temp branch — cleans
+ *   up empty orphans but refuses to discard a branch with unmerged commits.
+ */
+export function commitMergerResultToBaseRef(
+  baseRef: BaseRef,
+  mergeBranch: string,
+  log: (msg: string) => void,
+): void {
+  if (baseRef.refName === "HEAD") {
+    log(`Detached HEAD: skipping ref update. Merger result preserved on ${mergeBranch}.`)
+    return
+  }
+
+  try {
+    const tipResult = resolveRef(mergeBranch)
+    if (tipResult.kind === "missing") {
+      throw new Error(`Merger branch ${mergeBranch} not found — merger may have crashed.`)
+    }
+    const mergerTip = tipResult.sha
+
+    const casResult = casFastForward(baseRef.refName, baseRef.sha, mergerTip)
+    switch (casResult.kind) {
+      case "ok": {
+        log(`${baseRef.refName} advanced to ${shortSha(mergerTip)}.`)
+        safeDeleteBranch(mergeBranch, { force: true })
+        const worktrees = listWorktreesForBranch(baseRef.refName)
+        if (worktrees.length > 0) {
+          log(`Hint: run \`git -C ${worktrees[0]} reset --hard\` to refresh the worktree.`)
+        }
+        return
+      }
+      case "moved":
+        throw new Error(
+          `${baseRef.refName} moved (expected ${shortSha(baseRef.sha)}, actual ${shortSha(casResult.actualSha)}). ` +
+            `Merger result preserved on ${mergeBranch} — finish the merge by hand.`,
+        )
+      case "missing":
+        throw new Error(
+          `${baseRef.refName} no longer exists. ` +
+            `Merger result preserved on ${mergeBranch} — finish the merge by hand.`,
+        )
+    }
+  } finally {
+    // Best-effort cleanup of an orphaned temp branch when the success path
+    // (which force-deletes inline) didn't run. Non-force so a branch with
+    // unmerged commits is preserved for manual recovery.
+    if (resolveRef(mergeBranch).kind === "resolved") {
+      try {
+        safeDeleteBranch(mergeBranch)
+      } catch {
+        // Branch has unmerged commits — leave it in place.
+      }
+    }
+  }
+}
+
 function buildActionDeps(
   ctx: ProjectContext,
   baseRef: BaseRef,
+  seedNumber: number,
   model: string,
   sandboxes: SandboxCache,
 ): ActionDeps {
@@ -214,11 +285,15 @@ function buildActionDeps(
       return verdict
     },
     runMerger: async (issues, priorAttempts) => {
+      const mergeBranch = tempMergerBranchName(seedNumber)
       await runMerger({
         issues,
+        baseRef,
+        mergeBranch,
         priorAttempts,
         model,
       })
+      commitMergerResultToBaseRef(baseRef, mergeBranch, console.log)
       await Promise.all(issues.map((i) => sandboxes.release(i.number)))
     },
     postMarkerComment: async (n, body) => {

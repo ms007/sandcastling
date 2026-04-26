@@ -8,6 +8,7 @@ import { execFile, execFileSync } from "node:child_process"
 import { appendFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
+import type * as sandcastle from "@ai-hero/sandcastle"
 import {
   type BaseRef,
   DEFAULT_AGENT_MODEL,
@@ -80,9 +81,11 @@ export async function runOrchestrator(
   const sink = await openTranscriptSink(seedNumber, owner, repo, transcript)
   if (sink.path) console.log(`Transcript: ${sink.path}`)
 
+  const sandboxes = createSandboxCache()
+
   const deps: WorkflowDeps = {
     observe: buildObserveDeps(baseRef),
-    actions: buildActionDeps(ctx, baseRef, model),
+    actions: buildActionDeps(ctx, baseRef, model, sandboxes),
     hooks: { onTick: sink.onTick },
   }
 
@@ -92,7 +95,46 @@ export async function runOrchestrator(
     console.log(`\nWorkflow result: ${JSON.stringify(result)}`)
     return result
   } finally {
-    await sink.close(result).catch(() => {})
+    await Promise.allSettled([sandboxes.disposeAll(), sink.close(result)])
+  }
+}
+
+type SandboxCache = ReturnType<typeof createSandboxCache>
+
+const closeQuiet = async (pending: Promise<sandcastle.Sandbox>): Promise<void> => {
+  const sandbox = await pending.catch(() => null)
+  if (sandbox) await sandbox.close().catch(() => {})
+}
+
+/**
+ * Per-issue sandbox cache. The same container is reused across the
+ * implementer, reviewer, and any rework cycles for a given issue. Containers
+ * are released eagerly on terminal phases (approved review, merge) so the
+ * concurrent-container count stays at 1 even on long workflows; any survivors
+ * are torn down by `disposeAll` in the orchestrator's `finally` block.
+ */
+function createSandboxCache() {
+  const open = new Map<number, Promise<sandcastle.Sandbox>>()
+
+  return {
+    get: (issue: IssueRef): Promise<sandcastle.Sandbox> => {
+      const existing = open.get(issue.number)
+      if (existing) return existing
+      const created = createIssueSandbox(issue)
+      open.set(issue.number, created)
+      return created
+    },
+    release: async (issueNumber: number): Promise<void> => {
+      const pending = open.get(issueNumber)
+      if (!pending) return
+      open.delete(issueNumber)
+      await closeQuiet(pending)
+    },
+    disposeAll: async (): Promise<void> => {
+      const all = [...open.values()]
+      open.clear()
+      await Promise.allSettled(all.map(closeQuiet))
+    },
   }
 }
 
@@ -136,7 +178,12 @@ function fetchMarkerCommentsSync(issueNumber: number): readonly MarkerComment[] 
     .map((c) => ({ body: c.body }))
 }
 
-function buildActionDeps(ctx: ProjectContext, baseRef: BaseRef, model: string): ActionDeps {
+function buildActionDeps(
+  ctx: ProjectContext,
+  baseRef: BaseRef,
+  model: string,
+  sandboxes: SandboxCache,
+): ActionDeps {
   return {
     moveStatus: (itemId, status) => moveStatus(ctx, itemId, status),
     unblockDependents: async (n) => unblockDependents(ctx, n),
@@ -144,7 +191,7 @@ function buildActionDeps(ctx: ProjectContext, baseRef: BaseRef, model: string): 
       await execFileP("gh", ["issue", "close", String(n)])
     },
     runImplementer: async (issue, priorAttempts) => {
-      await using sandbox = await createIssueSandbox(issue)
+      const sandbox = await sandboxes.get(issue)
       await runImplementer({
         sandbox,
         issue,
@@ -154,8 +201,17 @@ function buildActionDeps(ctx: ProjectContext, baseRef: BaseRef, model: string): 
       })
     },
     runReviewer: async (issue, priorAttempts) => {
-      await using sandbox = await createIssueSandbox(issue)
-      return runReviewer({ sandbox, issue, priorAttempts, model })
+      const sandbox = await sandboxes.get(issue)
+      const verdict = await runReviewer({
+        sandbox,
+        issue,
+        priorAttempts,
+        model,
+      })
+      // Approved: no further stages will need this sandbox. Free it now to
+      // keep the concurrent-container count bounded; rework keeps it open.
+      if (verdict.tag === "approved") await sandboxes.release(issue.number)
+      return verdict
     },
     runMerger: async (issues, priorAttempts) => {
       await runMerger({
@@ -163,6 +219,7 @@ function buildActionDeps(ctx: ProjectContext, baseRef: BaseRef, model: string): 
         priorAttempts,
         model,
       })
+      await Promise.all(issues.map((i) => sandboxes.release(i.number)))
     },
     postMarkerComment: async (n, body) => {
       await execFileP("gh", ["issue", "comment", String(n), "--body", body])

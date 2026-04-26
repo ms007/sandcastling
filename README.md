@@ -2,52 +2,58 @@
 
 A testbed for automating GitHub issues with [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle).
 
-`sandcastle` runs a coding agent (here: Claude Code) inside a disposable Docker
-sandbox against a git worktree of this repo. `sandcastling` is the playground
-where we evaluate that workflow end-to-end — from picking up a GitHub issue,
-to having the agent code, commit, and (eventually) open a PR — without ever
-touching the host filesystem or the main branch.
-
-> **Status:** smoke-test stage. The current run wires up the sandbox and asks
-> the agent to make a single trivial commit. Issue-driven automation is the
-> next milestone.
+`sandcastle` runs a coding agent (here: Claude Code) inside a disposable
+Docker sandbox against a git worktree of this repo. `sandcastling` wraps
+that with an orchestrator that takes a GitHub issue (or PRD with child
+issues), drives implement → review → merge through one container per
+issue, and fast-forwards the result onto your base branch — without ever
+touching the host filesystem or shared branches.
 
 ---
 
-## For humans
+## How it works
 
-### What this repo is for
+```mermaid
+flowchart TD
+    Dev(["pnpm sandcastle &lt;issue&gt;"]) --> Resolve["Resolve seed + related issues<br/>via GitHub Projects"]
+    Resolve --> Tick{Manager tick<br/>observe → decide}
 
-- Validate that `sandcastle` boots reliably with our Dockerfile, volumes, and
-  branch strategy.
-- Iterate on the system prompt and tooling the agent gets when it is asked to
-  resolve a GitHub issue.
-- Catch breakage early when bumping `@ai-hero/sandcastle`, the Claude Code CLI,
-  or the model in use.
+    Tick -->|claim / implement| Impl[Implementer<br/>in per-issue sandbox]
+    Tick -->|review| Rev[Reviewer<br/>same sandbox]
+    Tick -->|rework| Tick
+    Tick -->|merge| Merge[Merger sandbox<br/>combines child branches]
+    Tick -->|cap or stalled| Blocked([result: blocked])
+    Tick -->|all merged| Done([result: done])
 
-### What's inside
+    Impl --> Tick
+    Rev --> Tick
+    Merge --> Land[CAS fast-forward<br/>onto base ref] --> Tick
 
-```
-.sandcastle/
-├── main.ts              # entrypoint: configures and runs sandcastle
-├── Dockerfile           # sandbox image (node 22 + git + Claude Code CLI + pnpm)
-├── prompts/
-│   └── sample.md        # task prompt handed to the agent
-├── lib/                 # custom docker bind-mount provider (see lib/docker.ts)
-├── .env.example         # ANTHROPIC_API_KEY lives here
-├── logs/                # per-run agent logs (gitignored)
-└── worktrees/           # ephemeral git worktrees per run (gitignored)
+    Tick -.status / marker comments.-> GH[(GitHub<br/>issues + Project board)]
+    Resolve -.gh.-> GH
 ```
 
-The host project itself is intentionally minimal: TypeScript + Biome, a
-`chalk` dependency so the agent has something to import, and pnpm as the
-package manager (pinned via `packageManager` in `package.json`).
+- **One container per issue.** The implementer and reviewer share a
+  sandbox; on approval the container is released. Merge runs in its own
+  short-lived sandbox.
+- **The host branch never moves until the merger succeeds.** Landing is a
+  compare-and-set fast-forward against the ref you started on; if it
+  moved underneath, the merger output is preserved on a temp branch for
+  manual recovery.
+- **The orchestrator owns all GitHub state** — status moves, marker
+  comments, closing issues, dropping blocking edges. Stages only commit
+  code.
+
+---
+
+## Quick start
 
 ### Prerequisites
 
 - Node.js ≥ 22 (see `.nvmrc`)
 - pnpm 10.31.0 (auto-activated via Corepack)
 - Docker running locally
+- `gh` authenticated against the target repo
 - An Anthropic API key
 
 ### Setup
@@ -59,109 +65,99 @@ cp .sandcastle/.env.example .sandcastle/.env
 pnpm build:image      # builds the sandcastle:latest Docker image
 ```
 
-### Run the smoke test
+### Run against an issue
 
 ```bash
-pnpm smoke
+pnpm sandcastle 42    # seed = issue #42 (single issue or a PRD)
 ```
 
-This will:
+The orchestrator will:
 
-1. Spin up a container from `sandcastle:latest`.
-2. Bind-mount a fresh git worktree on branch `smoke`.
-3. Run `pnpm install --prefer-offline` inside the sandbox.
-4. Hand `prompts/sample.md` to Claude Code and let it work.
-5. Print the number of commits and the completion signal on exit.
+1. Resolve the seed and any child issues from the GitHub Project board.
+2. Spin up one sandbox per issue against a fresh worktree on its branch.
+3. Drive implement → review → (rework or) merge until done, capped by
+   `tickCap` and `attemptCap`.
+4. Fast-forward your base ref to the merger result and release the
+   sandboxes.
 
-The agent's task in the sample prompt is to create `greeting.ts` and make
-exactly one Conventional Commit. Logs land in `.sandcastle/logs/`.
+A per-run transcript lands in `.sandcastle/logs/`.
 
-### Useful scripts
+---
 
-| Command                | Purpose                                              |
-| ---------------------- | ---------------------------------------------------- |
-| `pnpm smoke`           | Run the sandcastle agent end-to-end                  |
-| `pnpm build:image`     | (Re)build the sandbox Docker image                   |
-| `pnpm clean`           | Drop the persistent `node_modules` / pnpm-store volumes |
-| `pnpm verify`          | `tsc --noEmit` + Biome `check`                       |
-| `pnpm lint` / `format` | Biome lint / format                                  |
+## What's inside
 
-### Switching models or prompts
+```
+.sandcastle/
+├── main.ts                  # entrypoint: pnpm sandcastle <issue>
+├── Dockerfile               # sandbox image (node 22 + git + Claude Code CLI + pnpm)
+├── prompts/
+│   ├── system.md            # base system prompt for every stage
+│   ├── implement.md         # implementer task prompt
+│   ├── review.md            # reviewer task prompt
+│   └── merge.md             # merger task prompt
+├── lib/
+│   ├── orchestrator.ts      # wires gh / git / sandbox / Project board
+│   ├── manager/             # pure observe-decide-act workflow loop
+│   ├── agent.ts stages.ts   # implement / review / merge stage runners
+│   ├── docker.ts chown.ts   # custom bind-mount provider (UID 1000 sandbox)
+│   ├── git.ts project.ts    # CAS fast-forward, related-issue lookup
+│   └── volumes.ts           # warm pnpm-store / node_modules volumes
+├── .env.example             # ANTHROPIC_API_KEY lives here
+├── logs/                    # per-run transcripts (gitignored)
+└── worktrees/               # ephemeral git worktrees per run (gitignored)
+```
 
-- **Model:** edit the `sandcastle.claudeCode("…")` call in
-  `.sandcastle/main.ts`.
-- **Task:** point `promptFile` at a different file under
-  `.sandcastle/prompts/`.
-- **Branch strategy:** see `branchStrategy` in `main.ts` — defaults to a
-  fixed `smoke` branch so each run is reproducible.
+The host project itself is intentionally minimal: TypeScript + Biome,
+`chalk` so the agent has something to import, pnpm pinned via
+`packageManager` in `package.json`.
 
-### Known limitations
+---
+
+## Useful scripts
+
+| Command            | Purpose                                                   |
+| ------------------ | --------------------------------------------------------- |
+| `pnpm sandcastle N`| Run the orchestrator against issue / PRD `#N`             |
+| `pnpm build:image` | (Re)build the sandbox Docker image                        |
+| `pnpm clean`       | Drop the persistent `node_modules` / pnpm-store volumes   |
+| `pnpm verify`      | `tsc --noEmit` + Biome `check` + `node --test`            |
+| `pnpm lint` / `format` | Biome lint / format                                   |
+| `pnpm test`        | Run the workflow / adapter unit tests                     |
+
+---
+
+## Tuning
+
+- **Model, caps, transcript sink** — pass options to `runOrchestrator` in
+  `.sandcastle/main.ts` (`tickCap`, `attemptCap`, `model`, `transcript`).
+- **Stage behavior** — edit the relevant prompt under
+  `.sandcastle/prompts/`. Behavior changes belong there, not in adapter
+  code.
+- **Workflow logic** — `.sandcastle/lib/manager/` is a pure
+  observe-decide-act loop. Add phases / actions there; keep adapters
+  (`gh`, `git`, Docker, Projects) in `orchestrator.ts` and friends.
+
+---
+
+## Known limitations
 
 - Auth is API-key only. Subscription-based auth via `CLAUDE_CODE_OAUTH_TOKEN`
   is tracked upstream in
   [mattpocock/sandcastle#191](https://github.com/mattpocock/sandcastle/issues/191).
 - The sandbox runs as UID 1000 (`agent`); the custom provider in
-  `.sandcastle/lib/` exists to keep file ownership sane on bind mounts — see
-  the design notes in `lib/docker.ts` and `lib/chown.ts` before changing it.
+  `.sandcastle/lib/` exists to keep file ownership sane on bind mounts —
+  see the design notes in `lib/docker.ts` and `lib/chown.ts` before
+  changing it.
+- One concurrent sandbox container per issue. Cross-issue parallelism is
+  bounded by `tickCap` and the manager, not by Docker.
 
 ---
 
 ## For agents
 
-If you are an LLM-based coding agent reading this repo, here is what you need
-to know to be useful:
-
-### Mental model
-
-- This repo is **not** the product. It is a harness whose product is *another
-  agent run* (yours or Claude Code's, executed by `sandcastle`).
-- The "real" workflow we are building toward: a GitHub issue → an autonomous
-  sandcastle run that produces a PR resolving it. Today only the smoke path
-  exists.
-- Source of truth for what the sandboxed agent does is `prompts/sample.md`
-  plus `.sandcastle/main.ts`. Behavior changes belong there, not in
-  application code.
-
-### Ground rules
-
-- **Stay on your assigned branch.** `branchStrategy` in `main.ts` controls
-  this. Don't switch branches, don't push, don't open PRs unless the prompt
-  explicitly asks.
-- **One logical change per commit.** Use Conventional Commits
-  (`feat:`, `fix:`, `chore:`, …). No `--amend`, no force-pushes.
-- **Don't reinstall dependencies.** `onSandboxReady` already runs
-  `pnpm install --prefer-offline`. Re-running it wastes the warm volume cache.
-- **Don't write secrets to the repo.** `.sandcastle/.env` is gitignored;
-  never commit `ANTHROPIC_API_KEY` or any other credential, and never echo it
-  into logs or chat.
-- **Don't touch the sandbox plumbing casually.** Files under
-  `.sandcastle/lib/`, `.sandcastle/Dockerfile`, and the volume names in
-  `package.json` are coupled. Read the comments in `lib/docker.ts` and
-  `lib/chown.ts` before editing.
-- **Verify before declaring done.** Run `pnpm verify` (typecheck + Biome) for
-  any TypeScript change. The smoke prompt also defines its own
-  `<promise>COMPLETE</promise>` signal — emit it only when the post-conditions
-  it lists actually hold.
-
-### When asked to extend automation
-
-Likely shapes of future work:
-
-- A new prompt under `.sandcastle/prompts/` describing how to consume a
-  GitHub issue (title, body, comments) and what "done" means.
-- A new entrypoint alongside `main.ts` that fetches the issue via `gh` and
-  feeds its content into `promptFile` (or an inline `prompt`).
-- A different `branchStrategy` (e.g. one branch per issue).
-
-Prefer additive changes over rewriting `main.ts` so the smoke path keeps
-working as a regression check.
-
-### Style
-
-- TypeScript, ES modules, Node 22+. No CommonJS.
-- Biome (`biome.json`) is the formatter and linter — match its rules instead
-  of arguing with them.
-- Code, comments, commit messages, and docs are written in **English**.
+Durable instructions for any agent (host or sandboxed) working in this
+repo live in [`CLAUDE.md`](./CLAUDE.md). Stage-specific task prompts live
+under `.sandcastle/prompts/`.
 
 ---
 

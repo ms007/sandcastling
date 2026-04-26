@@ -163,6 +163,19 @@ export interface StatusFieldValue {
 
 // ---------- Public API -----------------------------------------------------
 
+/**
+ * Asks `gh` for the current repository's `owner/name`. Used by every entry
+ * point that needs to scope project/issue queries to the host repo.
+ */
+export async function detectRepo(): Promise<{ owner: string; repo: string }> {
+  const { stdout } = await execFileP("gh", ["repo", "view", "--json", "owner,name"])
+  const parsed = JSON.parse(stdout) as {
+    owner: { login: string }
+    name: string
+  }
+  return { owner: parsed.owner.login, repo: parsed.name }
+}
+
 export async function resolveProject(owner: string, repo: string): Promise<ProjectContext> {
   const data = await graphql<ResolveProjectResponse>(
     `

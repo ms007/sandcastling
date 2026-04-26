@@ -3,10 +3,9 @@
 Implement issue **#{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}** on branch
 **`{{BRANCH}}`**.
 
-The Planner has already moved this issue to `In Progress` on the project
-board (Project v2 item id: `{{ITEM_ID}}`). You are on `{{BRANCH}}`, which
-Sandcastle forked from the host's HEAD. Work only on this single issue —
-do not pull in adjacent fixes or refactors.
+You are on `{{BRANCH}}`, which Sandcastle forked from the host's HEAD.
+Work only on this single issue — do not pull in adjacent fixes or
+refactors.
 
 # CONTEXT
 
@@ -16,14 +15,15 @@ do not pull in adjacent fixes or refactors.
 
 </issue>
 
+{{PRIOR_ATTEMPTS}}
+
 <recent-commits>
 
-!`git log --oneline -n 10`
+!`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
 
 </recent-commits>
 
-Only if the issue itself does not give you enough context, pull the
-parent PRD:
+If the issue references a parent (PRD), pull it for wider context:
 
 ```bash
 gh issue view <parent-number>
@@ -31,14 +31,7 @@ gh issue view <parent-number>
 
 # WORKFLOW
 
-## 1. Explore the relevant code
-
-<<<<<<< Updated upstream
-Read the codebase before changing it. Pay extra attention to test files
-that exercise the area you are about to touch.
-=======
-Goal: enough context to implement the issue correctly — but no
-exploration for its own sake.
+## 1. Exploration
 
 - Start with the files the issue (or a linked PRD) explicitly names.
   Reading the test file that covers the affected module alongside is
@@ -64,7 +57,6 @@ exploration for its own sake.
 - **Emit one short status line after every batch of tool calls.** The
   harness aborts after 10 minutes of silence; long tool chains and
   subagent runs without parent text count as silence.
->>>>>>> Stashed changes
 
 ## 2. Implement (RGR where it applies)
 
@@ -104,52 +96,30 @@ Acceptable `<type>` values: `feat`, `fix`, `chore`, `refactor`, `docs`,
 `test`, `build`, `ci`. Multiple commits are fine if the work has multiple
 logical chunks — each must be self-contained and verified.
 
-## 5. Move status
-
-Once **all** commits are in place AND `pnpm verify` is green:
-
-```bash
-bun .sandcastle/lib/project-cli.ts move-status {{ITEM_ID}} "In Review"
-```
-
-Idempotent.
-
-# HANDLING BLOCKERS
-
-If you cannot complete the issue (missing infrastructure, ambiguous
-requirements, blocked by another open issue):
-
-1. Do **not** move the status (leave it `In Progress`).
-2. Leave a comment summarizing what was done, what's missing, and any
-   decisions you would defer to a human:
-
-   ```bash
-   gh issue comment {{ISSUE_NUMBER}} --body "<summary>"
-   ```
-
-3. Do **not** emit the completion signal — exit normally.
-
-Do not close the issue. The merger step closes issues at the end of the
-run.
-
 # RULES
 
 - The sandbox already ran `pnpm install --prefer-offline`. Do not
   reinstall.
 - Stay on `{{BRANCH}}`. Do not switch, push, or open a PR.
 - Code, comments, and commit messages in **English**.
-- Do not touch `.sandcastle/` (sandbox plumbing) unless the issue
-  explicitly asks for it.
 - No secrets in the repo, the diff, or the logs.
+- Do **not** move project status, post status comments, close issues, or
+  drop blocking edges. The orchestrator handles all bookkeeping.
 
 # DONE
 
-Once the issue's commits are in place + `pnpm verify` is green + status
-moved to `In Review`, output exactly:
+Once the issue's commits are in place and `pnpm verify` is green, output
+exactly:
 
 ```
-<promise>COMPLETE</promise>
+<result>ok</result>
 ```
 
-If you cannot complete the issue, do **not** emit the signal — leave the
-issue comment and exit normally.
+If you cannot complete the issue (missing infrastructure, ambiguous
+requirements, blocked by another open issue), output instead:
+
+```
+<result>failed: <one-line reason></result>
+```
+
+Do not output anything else after the tag.

@@ -122,6 +122,14 @@ describe("git helpers (real subprocess)", () => {
       }).trim()
       assert.equal(countCommitsAhead(headSha, "feature"), 0)
     })
+
+    it("returns 0 when the branch does not exist locally", () => {
+      const baseSha = execFileSync("git", ["rev-parse", "main"], {
+        cwd: repo,
+        encoding: "utf8",
+      }).trim()
+      assert.equal(countCommitsAhead(baseSha, "sandcastle/issue-does-not-exist"), 0)
+    })
   })
 
   describe("issueBranchName", () => {

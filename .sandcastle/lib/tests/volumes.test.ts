@@ -35,6 +35,6 @@ describe("workspaceVolumes", () => {
 })
 
 // Note: `removeVolumes` shells out to the docker binary. It is exercised end-to-end
-// by the smoke run (`pnpm clean`); a hermetic unit test would require either
+// by `pnpm clean`; a hermetic unit test would require either
 // dependency-injection of the spawn function or a temporary $PATH shim, both of
 // which add more harness than they buy.

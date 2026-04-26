@@ -31,7 +31,12 @@ const git = (...args: string[]): string => execFileSync("git", args, { encoding:
 
 const tryGit = (...args: string[]): string | null => {
   try {
-    return git(...args)
+    // Pipe stderr so an expected miss (e.g. a not-yet-created branch) does not
+    // leak `fatal: ...` noise into the orchestrator console.
+    return execFileSync("git", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim()
   } catch {
     return null
   }
@@ -49,8 +54,12 @@ export const captureBaseRef = (): BaseRef => ({
 
 export const formatBaseRef = (ref: BaseRef): string => `${ref.refName} (${ref.sha.slice(0, 7)})`
 
-export const countCommitsAhead = (baseSha: string, branch: string): number =>
-  Number(git("rev-list", "--count", `${baseSha}..refs/heads/${branch}`))
+export const countCommitsAhead = (baseSha: string, branch: string): number => {
+  // A missing local branch (expected before the implementer first runs) makes
+  // rev-list fatal; treat that as zero commits ahead.
+  const out = tryGit("rev-list", "--count", `${baseSha}..refs/heads/${branch}`)
+  return out === null ? 0 : Number(out)
+}
 
 /** Conventional sandcastle branch name for a given issue. Single source of truth. */
 export const issueBranchName = (issueNumber: number): string => `sandcastle/issue-${issueNumber}`

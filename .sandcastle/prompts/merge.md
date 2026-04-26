@@ -16,6 +16,8 @@ resolve conflicts intelligently, and confirm the result still passes
 
 # CONTEXT
 
+{{PRIOR_ATTEMPTS}}
+
 <recent-commits>
 
 !`git log -n 15 --format="%H%n%ad%n%B---" --date=short`
@@ -44,42 +46,14 @@ For each branch in the list above, in order:
    on HEAD before moving to the next branch. Do not proceed with a red
    tree.
 
-Do not merge branches in a different order than listed. Do not skip a
-branch unless it is genuinely impossible to merge — in that case, leave a
-comment on its issue explaining why and continue with the next. A skipped
-branch's issue stays open and **must not** be closed in step 3.
+Do not merge branches in a different order than listed. If a branch is
+genuinely impossible to merge, list it as failed in the result tag (see
+DONE below) and continue with the next.
 
 ## 2. Final verification
 
 After all branches are merged, run `pnpm verify` one last time. It must be
 green.
-
-## 3. Close issues
-
-For each issue that was successfully merged, close it:
-
-```bash
-gh issue close <number> --comment "Merged via Sandcastle run."
-```
-
-Move its project status to `Done`:
-
-```bash
-bun .sandcastle/lib/project-cli.ts move-status <itemId> "Done"
-```
-
-Then drop every "blocked by this issue" edge so dependent issues become
-eligible on the next planner run:
-
-```bash
-bun .sandcastle/lib/project-cli.ts unblock-dependents <number>
-```
-
-The issue list at the top carries the `itemId` for each entry.
-
-If every child issue of a parent PRD is now closed, close the PRD too with
-the same close + status-move + unblock-dependents triple. Do not close a
-PRD that still has open children.
 
 # RULES
 
@@ -90,12 +64,23 @@ PRD that still has open children.
 - Do not touch `.sandcastle/` unless a merge conflict genuinely requires
   it.
 - No secrets in the repo, the diff, or the logs.
+- Do **not** close issues, move project status, or drop blocking edges.
+  The orchestrator handles all bookkeeping after the merger run returns.
 
 # DONE
 
-Once every mergeable branch is merged + `pnpm verify` is green + the
-relevant issues are closed, output exactly:
+When the merger run is finished, output exactly one result tag.
+
+If every listed branch merged cleanly:
 
 ```
-<promise>COMPLETE</promise>
+<result>ok merged=<branch-a>,<branch-b>,...</result>
 ```
+
+If at least one branch failed to merge (the rest succeeded):
+
+```
+<result>failed merged=<branch-a> failedBranch=<branch-x> reason=<one-line reason></result>
+```
+
+Do not output anything else after the tag.

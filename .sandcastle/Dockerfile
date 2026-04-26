@@ -2,8 +2,7 @@ FROM node:22-bookworm
 
 # System deps. git is required so the agent can `git commit` inside the worktree.
 # gh is required so prompt-preprocessor shell snippets like `gh issue view ...`
-# (see .sandcastle/prompts/plan.md) work — they execute inside this container,
-# not on the host.
+# work — they execute inside this container, not on the host.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -26,13 +25,8 @@ USER agent
 # Install Claude Code CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Install Bun. Used by agent prompts to invoke `.sandcastle/lib/project-cli.ts`
-# directly (e.g. `bun .sandcastle/lib/project-cli.ts related <n>`) without a
-# package-manager layer in between. Source = executable, no build step.
-RUN curl -fsSL https://bun.sh/install | bash
-
-# Add Claude + Bun + Corepack shims to PATH
-ENV PATH="/home/agent/.local/bin:/home/agent/.bun/bin:$PATH"
+# Add Claude + Corepack shims to PATH
+ENV PATH="/home/agent/.local/bin:$PATH"
 ENV PNPM_HOME="/home/agent/.local/share/pnpm"
 
 # Enable pnpm via Corepack. Version pinned in the host's package.json

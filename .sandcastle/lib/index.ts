@@ -14,15 +14,19 @@ export {
   issueBranchName,
   readBranchInfo,
 } from "./git.ts"
-export { docker, SMOKE_DOCKER_OPTIONS, type DockerOptions } from "./docker.ts"
+export {
+  docker,
+  DEFAULT_DOCKER_OPTIONS,
+  type DockerOptions,
+} from "./docker.ts"
 export {
   createIssueSandbox,
-  type PlannedIssue,
+  DEFAULT_AGENT_MODEL,
   runImplementer,
   runMerger,
-  runPlanner,
   runReviewer,
 } from "./stages.ts"
+export type { IssueRef } from "./types.ts"
 export {
   removeVolumes,
   workspaceVolumes,
@@ -33,6 +37,7 @@ export { claudeCustom } from "./agent.ts"
 export {
   type BranchLookup,
   defaultBranchLookup,
+  detectRepo,
   type EligibleIssue,
   getRelatedIssues,
   moveStatus,

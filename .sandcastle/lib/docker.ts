@@ -44,25 +44,25 @@ export interface DockerOptions {
 }
 
 /**
- * Smoke-test defaults: targets the `sandcastle:smoke` image and warm-mounts
- * `node_modules/` and `.pnpm-store/` as named volumes. Override with explicit
- * options when running against a different image or repo.
+ * Defaults: target the `sandcastle:latest` image and warm-mount `node_modules/`
+ * and `.pnpm-store/` as named volumes. Override with explicit options when
+ * running against a different image or repo.
  */
-export const SMOKE_DOCKER_OPTIONS: DockerOptions = {
-  imageName: "sandcastle:smoke",
+export const DEFAULT_DOCKER_OPTIONS: DockerOptions = {
+  imageName: "sandcastle:latest",
   volumes: workspaceVolumes({
-    nodeModules: "sandcastle-smoke-node-modules",
-    pnpmStore: "sandcastle-smoke-pnpm-store",
+    nodeModules: "sandcastle-node-modules",
+    pnpmStore: "sandcastle-pnpm-store",
   }),
 }
 
 /**
  * Build a Sandcastle bind-mount provider backed by Docker.
  *
- * Called without arguments, uses {@link SMOKE_DOCKER_OPTIONS} so callers can
+ * Called without arguments, uses {@link DEFAULT_DOCKER_OPTIONS} so callers can
  * write `docker()` and stay clutter-free in main.ts.
  */
-export function docker(options: DockerOptions = SMOKE_DOCKER_OPTIONS): BindMountSandboxProvider {
+export function docker(options: DockerOptions = DEFAULT_DOCKER_OPTIONS): BindMountSandboxProvider {
   return createBindMountSandboxProvider({
     name: "docker",
     sandboxHomedir: SANDBOX_HOME,

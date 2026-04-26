@@ -1,167 +1,124 @@
-import * as sandcastle from "@ai-hero/sandcastle";
-import { claudeCustom } from "./agent.ts";
-import { docker } from "./docker.ts";
-import { type BaseRef, countCommitsAhead, formatBaseRef } from "./git.ts";
+import * as sandcastle from "@ai-hero/sandcastle"
+import { claudeCustom } from "./agent.ts"
+import { docker } from "./docker.ts"
+import { type BaseRef, countCommitsAhead, formatBaseRef } from "./git.ts"
+import { parseReviewerVerdict } from "./manager/result.ts"
+import type { ReviewerVerdict } from "./manager/types.ts"
+import type { IssueRef } from "./types.ts"
 
-export interface PlannedIssue {
-  readonly number: number;
-  readonly title: string;
-  readonly itemId: string;
-  readonly branch: string;
-}
-
-const COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
-const AGENT_MODEL = "claude-opus-4-6";
+export const DEFAULT_AGENT_MODEL = "claude-opus-4-6"
 const INSTALL_HOOKS = {
   sandbox: {
     onSandboxReady: [{ command: "pnpm install --prefer-offline" }],
   },
-} as const;
+} as const
 const PROMPTS = {
-  plan: "./.sandcastle/prompts/plan.md",
   implement: "./.sandcastle/prompts/implement.md",
   review: "./.sandcastle/prompts/review.md",
   merge: "./.sandcastle/prompts/merge.md",
-} as const;
+} as const
 
-const issuePromptArgs = (issue: PlannedIssue) => ({
+const COMPLETION_SIGNALS = {
+  implement: "</result>",
+  review: "</verdict>",
+  merge: "</result>",
+} as const
+
+const issuePromptArgs = (issue: IssueRef, priorAttempts = "") => ({
   ISSUE_NUMBER: String(issue.number),
   ISSUE_TITLE: issue.title,
-  ITEM_ID: issue.itemId,
   BRANCH: issue.branch,
-});
+  PRIOR_ATTEMPTS: priorAttempts,
+})
 
-/**
- * Parse the planner agent's stdout into a planned-issue list.
- *
- * - Returns the parsed `issues` array when a valid `<plan>` tag is present.
- * - Returns an empty array on `iteration > 1` when no `<plan>` tag is present
- *   (the planner has signalled "done").
- * - Throws on `iteration === 1` when the tag is missing or the issue list is
- *   empty — a fresh run cannot start without work.
- */
-export const parsePlannerOutput = (
-  stdout: string,
-  iteration: number,
-): readonly PlannedIssue[] => {
-  const planJson = stdout.match(/<plan>([\s\S]*?)<\/plan>/)?.[1];
-  if (!planJson) {
-    if (iteration === 1) {
-      throw new Error(`Planner did not produce a <plan> tag.\n\n${stdout}`);
-    }
-    return [];
-  }
-
-  const { issues } = JSON.parse(planJson) as { issues: PlannedIssue[] };
-  if (iteration === 1 && issues.length === 0) {
-    throw new Error("Planner returned an empty issue list on first run.");
-  }
-  return issues;
-};
-
-/**
- * Returns the planned issues. An empty array means the planner signalled
- * "done" — either by emitting an empty `<plan>` or by omitting the tag.
- * On the first iteration both are fatal: the run cannot start without work.
- */
-export const runPlanner = async ({
-  iteration,
-  issueNumber,
-}: {
-  iteration: number;
-  issueNumber: number;
-}): Promise<readonly PlannedIssue[]> => {
-  const result = await sandcastle.run({
-    sandbox: docker(),
-    name: `Planner (iter ${iteration})`,
-    agent: claudeCustom(AGENT_MODEL),
-    promptFile: PROMPTS.plan,
-    promptArgs: { ISSUE_NUMBER: String(issueNumber) },
-    completionSignal: "</plan>",
-  });
-
-  return parsePlannerOutput(result.stdout, iteration);
-};
-
-export const createIssueSandbox = (
-  issue: PlannedIssue,
-): Promise<sandcastle.Sandbox> =>
+export const createIssueSandbox = (issue: IssueRef): Promise<sandcastle.Sandbox> =>
   sandcastle.createSandbox({
     sandbox: docker(),
     branch: issue.branch,
     hooks: INSTALL_HOOKS,
-  });
+  })
 
 export const runImplementer = async ({
   sandbox,
   issue,
   baseRef,
+  priorAttempts = "",
+  model = DEFAULT_AGENT_MODEL,
 }: {
-  sandbox: sandcastle.Sandbox;
-  issue: PlannedIssue;
-  baseRef: BaseRef;
+  sandbox: sandcastle.Sandbox
+  issue: IssueRef
+  baseRef: BaseRef
+  priorAttempts?: string
+  model?: string
 }): Promise<void> => {
   const result = await sandbox.run({
     name: `Implementer #${issue.number}`,
-    agent: claudeCustom(AGENT_MODEL),
+    agent: claudeCustom(model),
     promptFile: PROMPTS.implement,
-    promptArgs: issuePromptArgs(issue),
-    completionSignal: COMPLETION_SIGNAL,
-  });
+    promptArgs: issuePromptArgs(issue, priorAttempts),
+    completionSignal: COMPLETION_SIGNALS.implement,
+  })
 
   // Compare branch against the frozen base, not the per-session commit list —
   // otherwise a resumed run with already-committed work fails here.
-  const totalAhead = countCommitsAhead(baseRef.sha, issue.branch);
-  const baseLabel = formatBaseRef(baseRef);
+  const totalAhead = countCommitsAhead(baseRef.sha, issue.branch)
+  const baseLabel = formatBaseRef(baseRef)
   if (totalAhead === 0) {
     throw new Error(
       `Implementer for #${issue.number} left ${issue.branch} with no commits ahead of ${baseLabel}. Inspect .sandcastle/logs/ for the implementer transcript before re-running.`,
-    );
+    )
   }
 
   console.log(
     `Implementer for #${issue.number}: ${result.commits.length} new commit(s) this session, ${totalAhead} total ahead of ${baseLabel}.`,
-  );
-};
+  )
+}
 
 export const runReviewer = async ({
   sandbox,
   issue,
+  priorAttempts = "",
+  model = DEFAULT_AGENT_MODEL,
 }: {
-  sandbox: sandcastle.Sandbox;
-  issue: PlannedIssue;
-}): Promise<void> => {
-  await sandbox.run({
+  sandbox: sandcastle.Sandbox
+  issue: IssueRef
+  priorAttempts?: string
+  model?: string
+}): Promise<ReviewerVerdict> => {
+  const result = await sandbox.run({
     name: `Reviewer #${issue.number}`,
-    agent: claudeCustom(AGENT_MODEL),
+    agent: claudeCustom(model),
     promptFile: PROMPTS.review,
-    promptArgs: issuePromptArgs(issue),
-    completionSignal: COMPLETION_SIGNAL,
-  });
-};
+    promptArgs: issuePromptArgs(issue, priorAttempts),
+    completionSignal: COMPLETION_SIGNALS.review,
+  })
+
+  return parseReviewerVerdict(result.stdout)
+}
 
 export const runMerger = async ({
-  iteration,
   issues,
+  priorAttempts = "",
+  model = DEFAULT_AGENT_MODEL,
 }: {
-  iteration: number;
-  issues: readonly PlannedIssue[];
+  issues: readonly IssueRef[]
+  priorAttempts?: string
+  model?: string
 }): Promise<void> => {
   await sandcastle.run({
     sandbox: docker(),
-    name: `Merger (iter ${iteration})`,
-    agent: claudeCustom(AGENT_MODEL),
+    name: "Merger",
+    agent: claudeCustom(model),
     promptFile: PROMPTS.merge,
     promptArgs: {
       BRANCH_LIST: issues.map((i) => `- ${i.branch}`).join("\n"),
-      ISSUE_LIST: issues
-        .map((i) => `- #${i.number} (itemId: ${i.itemId}): ${i.title}`)
-        .join("\n"),
+      ISSUE_LIST: issues.map((i) => `- #${i.number}: ${i.title}`).join("\n"),
+      PRIOR_ATTEMPTS: priorAttempts,
     },
-    completionSignal: COMPLETION_SIGNAL,
+    completionSignal: COMPLETION_SIGNALS.merge,
     hooks: INSTALL_HOOKS,
-  });
-};
+  })
+}
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */
-export const __testing = { issuePromptArgs };
+export const __testing = { issuePromptArgs }

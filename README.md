@@ -56,7 +56,7 @@ package manager (pinned via `packageManager` in `package.json`).
 pnpm install
 cp .sandcastle/.env.example .sandcastle/.env
 # then edit .sandcastle/.env and set ANTHROPIC_API_KEY=sk-ant-...
-pnpm build:image      # builds the sandcastle:smoke Docker image
+pnpm build:image      # builds the sandcastle:latest Docker image
 ```
 
 ### Run the smoke test
@@ -67,7 +67,7 @@ pnpm smoke
 
 This will:
 
-1. Spin up a container from `sandcastle:smoke`.
+1. Spin up a container from `sandcastle:latest`.
 2. Bind-mount a fresh git worktree on branch `smoke`.
 3. Run `pnpm install --prefer-offline` inside the sandbox.
 4. Hand `prompts/sample.md` to Claude Code and let it work.

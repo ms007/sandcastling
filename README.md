@@ -19,18 +19,23 @@ flowchart TD
     Resolve --> Tick{Manager tick<br/>observe → decide}
 
     Tick -->|claim / implement| Impl[Implementer<br/>in per-issue sandbox]
-    Tick -->|review| Rev[Reviewer<br/>same sandbox]
-    Tick -->|rework| Tick
-    Tick -->|merge| Merge[Merger sandbox<br/>combines child branches]
-    Tick -->|cap or stalled| Blocked([result: blocked])
-    Tick -->|all merged| Done([result: done])
+    Tick -->|promote / review| Rev[Reviewer<br/>same sandbox]
+    Tick -->|rework verdict| Tick
+    Tick -->|merge ready wave| Merge[Merger sandbox<br/>per wave of children]
+    Tick -->|finalize| Final[finalizeIssue / finalizePrd<br/>close + drop blockers]
+    Tick -->|tickCap / attemptCap / stalled| Blocked([result: blocked])
+    Tick -->|all merged &amp; finalized| Done([result: done])
 
     Impl --> Tick
     Rev --> Tick
-    Merge --> Land[CAS fast-forward<br/>onto base ref] --> Tick
+    Final --> Tick
+    Merge --> Land{CAS fast-forward<br/>onto base ref}
+    Land -->|advanced| Tick
+    Land -->|base moved / detached| Preserve([Preserved on<br/>temp merge branch])
 
     Tick -.status / marker comments.-> GH[(GitHub<br/>issues + Project board)]
     Resolve -.gh.-> GH
+    Final -.close + unblock.-> GH
 ```
 
 - **One container per issue.** The implementer and reviewer share a

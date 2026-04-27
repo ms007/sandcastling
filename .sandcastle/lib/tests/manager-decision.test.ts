@@ -17,12 +17,14 @@ const snapshot = (
   phase: IssueSnapshot["phase"],
   aheadOfBase = 0,
   reworkReason: string | null = null,
+  blockedBy: readonly number[] = [],
 ): IssueSnapshot => ({
   issue: issue(n),
   phase,
   aheadOfBase,
   markerComments: [],
   reworkReason,
+  blockedBy,
 })
 
 const defaultProtection = {
@@ -452,6 +454,271 @@ describe("decide — tooManyAttempts", () => {
     assert.equal(d.tag, "blocked")
     if (d.tag === "blocked") {
       assert.equal(d.reason, "tickCap")
+    }
+  })
+})
+
+describe("decide — wave-aware PRD", () => {
+  const wavePrdObs = (
+    children: IssueSnapshot[],
+    seedPhase: IssueSnapshot["phase"] = "todo",
+  ): Observation => ({
+    seed: { ...snapshot(100, seedPhase), isPrd: true },
+    children,
+    tickCount: 0,
+    tickCap: 50,
+    ...defaultProtection,
+  })
+
+  it("child blocked by unfinished sibling is not picked up", () => {
+    const d = decide(wavePrdObs([snapshot(1, "todo"), snapshot(2, "todo", 0, null, [1])]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "claimIssue")
+      if (d.action.tag === "claimIssue") assert.equal(d.action.issue.number, 1)
+    }
+  })
+
+  it("child blocked only by landed sibling is picked up", () => {
+    const d = decide(wavePrdObs([snapshot(1, "done"), snapshot(2, "todo", 0, null, [1])]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "claimIssue")
+      if (d.action.tag === "claimIssue") assert.equal(d.action.issue.number, 2)
+    }
+  })
+
+  it("child blocked only by issue outside the PRD is picked up (external blockers ignored)", () => {
+    const d = decide(wavePrdObs([snapshot(1, "todo", 0, null, [999])]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "claimIssue")
+      if (d.action.tag === "claimIssue") assert.equal(d.action.issue.number, 1)
+    }
+  })
+
+  it("runMerger emitted with wave issue set, not full children list", () => {
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "reviewed", 0, null, [1]),
+        snapshot(3, "reviewed", 0, null, [1]),
+      ]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "runMerger")
+      if (d.action.tag === "runMerger") {
+        assert.deepEqual(
+          d.action.issues.map((i) => i.number),
+          [2, 3],
+        )
+      }
+    }
+  })
+
+  it("next wave is emitted after all previous wave members reach done", () => {
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "done", 0, null, [1]),
+        snapshot(3, "todo", 0, null, [2]),
+      ]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "claimIssue")
+      if (d.action.tag === "claimIssue") assert.equal(d.action.issue.number, 3)
+    }
+  })
+
+  it("child blocked by multiple siblings requires all to be done", () => {
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "claimed"),
+        snapshot(3, "todo", 0, null, [1, 2]),
+      ]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "runImplementer")
+      if (d.action.tag === "runImplementer") assert.equal(d.action.issue.number, 2)
+    }
+  })
+
+  it("diamond dependency — third wave waits for both parents", () => {
+    // A(1) → B(2), C(3) → D(4)  (D blocked by both B and C)
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "done", 0, null, [1]),
+        snapshot(3, "reviewed", 0, null, [1]),
+        snapshot(4, "todo", 0, null, [2, 3]),
+      ]),
+    )
+    // C(3) is reviewed and in the current wave; D(4) is blocked by C (not done)
+    // wave = [3], all reviewed → runMerger([3])
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "runMerger")
+      if (d.action.tag === "runMerger") {
+        assert.deepEqual(
+          d.action.issues.map((i) => i.number),
+          [3],
+        )
+      }
+    }
+  })
+
+  it("empty wave with non-done children returns done (circular dep degeneracy)", () => {
+    // A blocks B, B blocks A — neither can enter the wave
+    const d = decide(
+      wavePrdObs([snapshot(1, "todo", 0, null, [2]), snapshot(2, "todo", 0, null, [1])]),
+    )
+    assert.equal(d.tag, "done")
+  })
+
+  it("all children done triggers finalizePrd regardless of blockers", () => {
+    const d = decide(
+      wavePrdObs([snapshot(1, "done", 0, null, [2]), snapshot(2, "done", 0, null, [1])]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "finalizePrd")
+    }
+  })
+
+  it("self-blocked child is excluded from the wave (treated like a cycle)", () => {
+    const d = decide(wavePrdObs([snapshot(1, "todo", 0, null, [1])]))
+    assert.equal(d.tag, "done")
+  })
+
+  it("merged child is finalized before wave children are advanced", () => {
+    const d = decide(wavePrdObs([snapshot(1, "merged"), snapshot(2, "todo")]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "finalizeIssue")
+      if (d.action.tag === "finalizeIssue") assert.equal(d.action.issue.number, 1)
+    }
+  })
+})
+
+describe("decide — wave annotations", () => {
+  const wavePrdObs = (
+    children: IssueSnapshot[],
+    seedPhase: IssueSnapshot["phase"] = "todo",
+  ): Observation => ({
+    seed: { ...snapshot(100, seedPhase), isPrd: true },
+    children,
+    tickCount: 0,
+    tickCap: 50,
+    ...defaultProtection,
+  })
+
+  it("wave-0 action carries index 0 and its issue set", () => {
+    const d = decide(wavePrdObs([snapshot(1, "todo"), snapshot(2, "todo", 0, null, [1])]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.deepEqual(d.wave, { index: 0, issues: [1] })
+    }
+  })
+
+  it("wave-1 action carries index 1 after wave-0 is done", () => {
+    const d = decide(wavePrdObs([snapshot(1, "done"), snapshot(2, "todo", 0, null, [1])]))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.deepEqual(d.wave, { index: 1, issues: [2] })
+    }
+  })
+
+  it("flat PRD (no blockers) assigns all children to wave 0", () => {
+    const d = decide(
+      wavePrdObs([snapshot(1, "todo"), snapshot(2, "reviewed"), snapshot(3, "claimed")]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.wave?.index, 0)
+      assert.deepEqual(d.wave?.issues, [1, 2, 3])
+    }
+  })
+
+  it("three-wave chain annotates each layer correctly", () => {
+    const d1 = decide(
+      wavePrdObs([
+        snapshot(1, "todo"),
+        snapshot(2, "todo", 0, null, [1]),
+        snapshot(3, "todo", 0, null, [2]),
+      ]),
+    )
+    assert.equal(d1.tag, "act")
+    if (d1.tag === "act") assert.deepEqual(d1.wave, { index: 0, issues: [1] })
+
+    const d2 = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "todo", 0, null, [1]),
+        snapshot(3, "todo", 0, null, [2]),
+      ]),
+    )
+    assert.equal(d2.tag, "act")
+    if (d2.tag === "act") assert.deepEqual(d2.wave, { index: 1, issues: [2] })
+
+    const d3 = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "done", 0, null, [1]),
+        snapshot(3, "todo", 0, null, [2]),
+      ]),
+    )
+    assert.equal(d3.tag, "act")
+    if (d3.tag === "act") assert.deepEqual(d3.wave, { index: 2, issues: [3] })
+  })
+
+  it("finalizePrd does not carry a wave annotation", () => {
+    const d = decide(wavePrdObs([snapshot(1, "done")], "todo"))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "finalizePrd")
+      assert.equal(d.wave, undefined)
+    }
+  })
+
+  it("leaf issue decision does not carry a wave annotation", () => {
+    const d = decide(singleObs("todo"))
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.wave, undefined)
+    }
+  })
+
+  it("merged child finalization carries its original wave index", () => {
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "merged", 0, null, [1]),
+        snapshot(3, "merged", 0, null, [1]),
+      ]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "finalizeIssue")
+      assert.deepEqual(d.wave, { index: 1, issues: [2, 3] })
+    }
+  })
+
+  it("runMerger for wave-1 issues includes wave annotation", () => {
+    const d = decide(
+      wavePrdObs([
+        snapshot(1, "done"),
+        snapshot(2, "reviewed", 0, null, [1]),
+        snapshot(3, "reviewed", 0, null, [1]),
+      ]),
+    )
+    assert.equal(d.tag, "act")
+    if (d.tag === "act") {
+      assert.equal(d.action.tag, "runMerger")
+      assert.deepEqual(d.wave, { index: 1, issues: [2, 3] })
     }
   })
 })

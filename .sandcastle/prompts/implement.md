@@ -101,6 +101,13 @@ logical chunks — each must be self-contained and verified.
 - The sandbox already ran `pnpm install --prefer-offline`. Do not
   reinstall.
 - Stay on `{{BRANCH}}`. Do not switch, push, or open a PR.
+- Do **not** merge, rebase, or cherry-pick from any other
+  `sandcastle/*` branch. Your branch was forked from the host's HEAD
+  and must stay independent.
+- If you discover that completing this issue requires code from another
+  sandcastle issue branch that has not yet been merged into the base,
+  **stop immediately** and emit the cross-branch dependency failure
+  verdict described below.
 - Code, comments, and commit messages in **English**.
 - No secrets in the repo, the diff, or the logs.
 - Do **not** move project status, post status comments, close issues, or
@@ -120,6 +127,14 @@ requirements, blocked by another open issue), output instead:
 
 ```
 <result>failed: <one-line reason></result>
+```
+
+If the reason is a cross-branch dependency — you need code that lives on
+another sandcastle issue branch and has not been merged into the base —
+use this specific verdict so the orchestrator can identify it:
+
+```
+<result>failed: CROSS_BRANCH_DEPENDENCY: <what you need and from which issue/branch></result>
 ```
 
 Do not output anything else after the tag.

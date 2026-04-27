@@ -25,6 +25,7 @@ export interface IssueSnapshot {
   readonly aheadOfBase: number
   readonly markerComments: readonly MarkerComment[]
   readonly reworkReason: string | null
+  readonly blockedBy: readonly number[]
 }
 
 export interface Observation {
@@ -38,8 +39,13 @@ export interface Observation {
   readonly prevAction: Action | null
 }
 
+export interface WaveAnnotation {
+  readonly index: number
+  readonly issues: readonly number[]
+}
+
 export type Decision =
-  | { readonly tag: "act"; readonly action: Action }
+  | { readonly tag: "act"; readonly action: Action; readonly wave?: WaveAnnotation }
   | { readonly tag: "done" }
   | {
       readonly tag: "blocked"
@@ -77,6 +83,7 @@ export type Action =
 export interface WorkflowConfig {
   readonly seed: IssueRef & { readonly isPrd: boolean }
   readonly children: readonly IssueRef[]
+  readonly childBlockers?: ReadonlyMap<number, readonly number[]>
   readonly tickCap: number
   readonly attemptCap: number
 }

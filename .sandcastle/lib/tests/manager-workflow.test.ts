@@ -13,6 +13,7 @@ import type {
   WorkflowState,
 } from "../manager/types.ts"
 import { buildPriorAttemptsBlock, runWorkflow, tick } from "../manager/workflow.ts"
+import type { TickEvent } from "../manager/workflow.ts"
 import type { StatusName } from "../project.ts"
 import type { IssueRef } from "../types.ts"
 
@@ -212,6 +213,36 @@ describe("observe", () => {
     }
     const obs = observe(config, state, noopObserveDeps)
     assert.equal(obs.seed.reworkReason, "needs more tests")
+  })
+
+  it("threads childBlockers into child snapshots", () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(100), isPrd: true },
+      children: [issue(1), issue(2), issue(3)],
+      childBlockers: new Map([
+        [2, [1]],
+        [3, [1, 2]],
+      ]),
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const obs = observe(config, emptyState, noopObserveDeps)
+    assert.deepEqual(obs.children[0]?.blockedBy, [])
+    assert.deepEqual(obs.children[1]?.blockedBy, [1])
+    assert.deepEqual(obs.children[2]?.blockedBy, [1, 2])
+    assert.deepEqual(obs.seed.blockedBy, [])
+  })
+
+  it("defaults blockedBy to empty when childBlockers is omitted", () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(100), isPrd: true },
+      children: [issue(1), issue(2)],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const obs = observe(config, emptyState, noopObserveDeps)
+    assert.deepEqual(obs.children[0]?.blockedBy, [])
+    assert.deepEqual(obs.children[1]?.blockedBy, [])
   })
 })
 
@@ -1002,5 +1033,136 @@ describe("runWorkflow — rework loop", () => {
     // Verify stored comments accumulate
     const storedComments = commentStore.store.get(1) ?? []
     assert.equal(storedComments.length, 2)
+  })
+})
+
+describe("runWorkflow — implementer cross-branch dependency failure", () => {
+  it("surfaces CROSS_BRANCH_DEPENDENCY failure from implementer through the workflow", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps, log } = fakeActionDeps()
+    deps.runImplementer = async () => {
+      throw new Error(
+        "Implementer for #1 aborted: CROSS_BRANCH_DEPENDENCY: needs types from sandcastle/issue-5",
+      )
+    }
+
+    await assert.rejects(
+      () => runWorkflow(config, { observe: noopObserveDeps, actions: deps }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(err.message.includes("CROSS_BRANCH_DEPENDENCY"))
+        assert.ok(err.message.includes("sandcastle/issue-5"))
+        return true
+      },
+    )
+
+    assert.deepEqual(log, ["moveStatus(item-1, In Progress)"])
+  })
+})
+
+describe("runWorkflow — two-wave PRD", () => {
+  it("foundational child completes before dependents; dependents merge in one call", async () => {
+    // Wave 1: issue 1 (no blockers — foundational)
+    // Wave 2: issues 2 and 3 (both blocked by issue 1)
+    const config: WorkflowConfig = {
+      seed: { ...issue(100), isPrd: true },
+      children: [issue(1), issue(2), issue(3)],
+      childBlockers: new Map([
+        [2, [1]],
+        [3, [1]],
+      ]),
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps, log } = fakeActionDeps()
+    const result = await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+    })
+    assert.equal(result.tag, "done")
+
+    // Wave 1: claim(1) → implement(1) → promote(1) → review(1) → merger([1]) → finalize(1)
+    // Wave 2: claim(2) → implement(2) → promote(2) → review(2)
+    //         → claim(3) → implement(3) → promote(3) → review(3)
+    //         → merger([2,3]) → finalize(2) → finalize(3)
+    // finalizePrd(100)
+    // Total: 6 + 8 + 1 + 1 + 1 = 17  (or count from log)
+
+    // Foundational child (#1) must be fully finalized before any dependent is claimed
+    const finalizeIdx1 = log.indexOf("moveStatus(item-1, Done)")
+    const claimIdx2 = log.indexOf("moveStatus(item-2, In Progress)")
+    const claimIdx3 = log.indexOf("moveStatus(item-3, In Progress)")
+    assert.ok(finalizeIdx1 >= 0, "issue 1 should be finalized")
+    assert.ok(claimIdx2 >= 0, "issue 2 should be claimed")
+    assert.ok(claimIdx3 >= 0, "issue 3 should be claimed")
+    assert.ok(finalizeIdx1 < claimIdx2, "issue 1 finalized before issue 2 claimed")
+    assert.ok(finalizeIdx1 < claimIdx3, "issue 1 finalized before issue 3 claimed")
+
+    // Merger calls: first merger for wave 1 (issue 1), second for wave 2 (issues 2, 3)
+    const mergerCalls = log.filter((l) => l.startsWith("runMerger"))
+    assert.equal(mergerCalls.length, 2)
+    assert.equal(mergerCalls[0], "runMerger([1])")
+    assert.equal(mergerCalls[1], "runMerger([2,3])")
+
+    // PRD is finalized last
+    assert.ok(log.includes("closeIssue(100)"))
+    assert.ok(log.includes("unblockDependents(100)"))
+  })
+})
+
+describe("runWorkflow — two-wave PRD wave annotations", () => {
+  it("tick events carry wave annotations identifying each action's wave", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(100), isPrd: true },
+      children: [issue(1), issue(2), issue(3)],
+      childBlockers: new Map([
+        [2, [1]],
+        [3, [1]],
+      ]),
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    const tickEvents: TickEvent[] = []
+    const result = await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+      hooks: { onTick: (e) => tickEvents.push(e) },
+    })
+    assert.equal(result.tag, "done")
+
+    const actEvents = tickEvents.filter((e) => e.decision.tag === "act")
+    assert.ok(actEvents.length > 0)
+
+    for (const event of actEvents) {
+      if (event.decision.tag !== "act") continue
+      const action = event.decision.action
+      if (action.tag === "finalizePrd") {
+        assert.equal(event.decision.wave, undefined, "finalizePrd should not carry wave")
+        continue
+      }
+      assert.ok(event.decision.wave !== undefined, `wave missing for ${action.tag}`)
+    }
+
+    const wave0 = actEvents.filter((e) => e.decision.tag === "act" && e.decision.wave?.index === 0)
+    assert.ok(wave0.length > 0, "should have wave-0 ticks")
+    for (const t of wave0) {
+      if (t.decision.tag === "act") {
+        assert.deepEqual(t.decision.wave?.issues, [1])
+      }
+    }
+
+    const wave1 = actEvents.filter((e) => e.decision.tag === "act" && e.decision.wave?.index === 1)
+    assert.ok(wave1.length > 0, "should have wave-1 ticks")
+    for (const t of wave1) {
+      if (t.decision.tag === "act") {
+        assert.deepEqual(t.decision.wave?.issues, [2, 3])
+      }
+    }
   })
 })

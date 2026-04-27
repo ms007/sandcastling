@@ -13,6 +13,7 @@ export type {
   ObserveDeps,
   Observation,
   ReviewerVerdict,
+  WaveAnnotation,
   WorkflowConfig,
   WorkflowResult,
 } from "./types.ts"

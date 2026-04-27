@@ -13,7 +13,7 @@ import { join } from "node:path"
 import { after, before, describe, it } from "node:test"
 import type { BaseRef } from "../git.ts"
 import { resolveRef } from "../git.ts"
-import { commitMergerResultToBaseRef } from "../orchestrator.ts"
+import { commitMergerResultToBaseRef, commitWaveMergerResult } from "../orchestrator.ts"
 
 describe("commitMergerResultToBaseRef (real git)", () => {
   let repo: string
@@ -192,5 +192,181 @@ describe("commitMergerResultToBaseRef (real git)", () => {
     assert.equal(resolveRef(mergeBranch).kind, "resolved")
     // Clean up.
     git("branch", "-D", mergeBranch)
+  })
+})
+
+describe("commitWaveMergerResult (wave chain, real git)", () => {
+  let repo: string
+  let originalCwd: string
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim()
+
+  before(() => {
+    originalCwd = process.cwd()
+    repo = mkdtempSync(join(tmpdir(), "sandcastle-wave-test-"))
+    process.chdir(repo)
+    git("init", "-b", "main", "-q")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    git("commit", "--allow-empty", "-m", "initial")
+  })
+
+  after(() => {
+    process.chdir(originalCwd)
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  it("wave 0 failure wraps inner error with 'Wave 1' context", () => {
+    const baseRef: BaseRef = { sha: git("rev-parse", "main"), refName: "main" }
+    const logs: string[] = []
+    assert.throws(
+      () =>
+        commitWaveMergerResult(baseRef, "sandcastle/tmp-merge/ghost-branch", 0, (m) =>
+          logs.push(m),
+        ),
+      (err: Error) => {
+        assert.ok(err.message.includes("Wave 1"), `Expected 'Wave 1', got: ${err.message}`)
+        assert.ok(err.message.includes("not found"), `Expected 'not found', got: ${err.message}`)
+        assert.ok(err.cause instanceof Error, "Expected cause to preserve original error")
+        return true
+      },
+    )
+  })
+
+  it("detached HEAD with missing merge branch returns unchanged baseRef", () => {
+    const sha = git("rev-parse", "main")
+    const baseRef: BaseRef = { sha, refName: "HEAD" }
+    const logs: string[] = []
+    const result = commitWaveMergerResult(baseRef, "sandcastle/tmp-merge/ghost-detached", 0, (m) =>
+      logs.push(m),
+    )
+    assert.equal(result.sha, sha)
+    assert.equal(result.refName, "HEAD")
+  })
+
+  it("per-wave base ref evolution: host branch advances after wave 1, wave 2 forks from post-wave-1 tip", () => {
+    const initialSha = git("rev-parse", "main")
+
+    // Wave 0: fork temp branch from initial SHA, add a merge commit.
+    const mergeBranch0 = "sandcastle/tmp-merge/wave-evol-0"
+    git("checkout", "-q", "-b", mergeBranch0, initialSha)
+    git("commit", "--allow-empty", "-m", "wave-0 merge commit")
+    const wave0Tip = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+
+    const logs: string[] = []
+    const baseRef0: BaseRef = { sha: initialSha, refName: "main" }
+    const baseRef1 = commitWaveMergerResult(baseRef0, mergeBranch0, 0, (m) => logs.push(m))
+
+    // main advanced to wave 0's merger tip.
+    assert.equal(git("rev-parse", "main"), wave0Tip)
+    assert.equal(baseRef1.sha, wave0Tip)
+    assert.equal(baseRef1.refName, "main")
+    // Temp branch deleted.
+    assert.equal(resolveRef(mergeBranch0).kind, "missing")
+
+    // Wave 1: fork temp branch from post-wave-0 tip, add a merge commit.
+    const mergeBranch1 = "sandcastle/tmp-merge/wave-evol-1"
+    git("checkout", "-q", "-b", mergeBranch1, baseRef1.sha)
+    git("commit", "--allow-empty", "-m", "wave-1 merge commit")
+    const wave1Tip = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+
+    const baseRef2 = commitWaveMergerResult(baseRef1, mergeBranch1, 1, (m) => logs.push(m))
+
+    // main advanced to wave 1's merger tip.
+    assert.equal(git("rev-parse", "main"), wave1Tip)
+    assert.equal(baseRef2.sha, wave1Tip)
+    assert.equal(baseRef2.refName, "main")
+    // Wave 1's CAS expected SHA was the post-wave-0 SHA, not the run-start SHA.
+    assert.notEqual(baseRef1.sha, initialSha)
+    // Both waves' commits are in main's history.
+    const history = git("log", "--oneline", `${initialSha}..main`)
+    assert.ok(history.includes("wave-0 merge commit"))
+    assert.ok(history.includes("wave-1 merge commit"))
+  })
+
+  it("detached-HEAD wave chain: both temp branches survive, wave 1 forks from wave 0 tip", () => {
+    const initialSha = git("rev-parse", "main")
+
+    // Wave 0: detached HEAD.
+    const mergeBranch0 = "sandcastle/tmp-merge/detached-w0"
+    git("checkout", "-q", "-b", mergeBranch0, initialSha)
+    git("commit", "--allow-empty", "-m", "detached wave-0 commit")
+    const wave0Tip = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+
+    const logs: string[] = []
+    const baseRef0: BaseRef = { sha: initialSha, refName: "HEAD" }
+    const baseRef1 = commitWaveMergerResult(baseRef0, mergeBranch0, 0, (m) => logs.push(m))
+
+    assert.equal(baseRef1.sha, wave0Tip)
+    assert.equal(baseRef1.refName, "HEAD")
+    // Wave 0's temp branch survives (detached HEAD, no CAS).
+    assert.equal(resolveRef(mergeBranch0).kind, "resolved")
+
+    // Wave 1: fork from wave 0's tip.
+    const mergeBranch1 = "sandcastle/tmp-merge/detached-w1"
+    git("checkout", "-q", "-b", mergeBranch1, baseRef1.sha)
+    git("commit", "--allow-empty", "-m", "detached wave-1 commit")
+    const wave1Tip = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+
+    const baseRef2 = commitWaveMergerResult(baseRef1, mergeBranch1, 1, (m) => logs.push(m))
+
+    assert.equal(baseRef2.sha, wave1Tip)
+    assert.equal(baseRef2.refName, "HEAD")
+    // Both temp branches survive.
+    assert.equal(resolveRef(mergeBranch0).kind, "resolved")
+    assert.equal(resolveRef(mergeBranch1).kind, "resolved")
+    // Wave 0's commit is an ancestor of wave 1's tip.
+    const mergeBase = git("merge-base", wave0Tip, wave1Tip)
+    assert.equal(mergeBase, wave0Tip)
+
+    // Clean up.
+    git("branch", "-D", mergeBranch0)
+    git("branch", "-D", mergeBranch1)
+  })
+
+  it("wave-failure termination: wave 1 lands, wave 2 fails, wave 1 effects remain", () => {
+    const initialSha = git("rev-parse", "main")
+
+    // Wave 0: succeeds.
+    const mergeBranch0 = "sandcastle/tmp-merge/fail-w0"
+    git("checkout", "-q", "-b", mergeBranch0, initialSha)
+    git("commit", "--allow-empty", "-m", "fail-test wave-0 commit")
+    const wave0Tip = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+
+    const logs: string[] = []
+    const baseRef0: BaseRef = { sha: initialSha, refName: "main" }
+    const baseRef1 = commitWaveMergerResult(baseRef0, mergeBranch0, 0, (m) => logs.push(m))
+    assert.equal(baseRef1.sha, wave0Tip)
+
+    // Concurrent advance: someone else pushes to main after wave 0 landed.
+    git("commit", "--allow-empty", "-m", "concurrent advance")
+    const concurrentSha = git("rev-parse", "main")
+
+    // Wave 1: fork from wave 0's tip (as the orchestrator would), add a commit.
+    // CAS will fail because main moved past wave0Tip.
+    const mergeBranch1 = "sandcastle/tmp-merge/fail-w1"
+    git("checkout", "-q", "-b", mergeBranch1, baseRef1.sha)
+    git("commit", "--allow-empty", "-m", "fail-test wave-1 commit")
+    git("checkout", "-q", "main")
+
+    assert.throws(
+      () => commitWaveMergerResult(baseRef1, mergeBranch1, 1, (m) => logs.push(m)),
+      (err: Error) => err.message.includes("Wave 2") && err.message.includes(mergeBranch1),
+    )
+
+    // Wave 0's effects remain on main (the concurrent advance is ahead of wave0Tip).
+    assert.equal(git("rev-parse", "main"), concurrentSha)
+    const mergeBase = git("merge-base", wave0Tip, concurrentSha)
+    assert.equal(mergeBase, wave0Tip, "Wave 0's tip should be an ancestor of main")
+
+    // Wave 1's temp branch survives (has unmerged commits).
+    assert.equal(resolveRef(mergeBranch1).kind, "resolved")
+
+    // Clean up.
+    git("branch", "-D", mergeBranch1)
   })
 })

@@ -3,7 +3,7 @@ import * as sandcastle from "@ai-hero/sandcastle"
 import { claudeCustom } from "./agent.ts"
 import { docker } from "./docker.ts"
 import { type BaseRef, countCommitsAhead, formatBaseRef } from "./git.ts"
-import { parseReviewerVerdict } from "./manager/result.ts"
+import { parseImplementerResult, parseReviewerVerdict } from "./manager/result.ts"
 import type { ReviewerVerdict } from "./manager/types.ts"
 import type { IssueRef } from "./types.ts"
 
@@ -59,6 +59,11 @@ export const runImplementer = async ({
     promptArgs: issuePromptArgs(issue, priorAttempts),
     completionSignal: COMPLETION_SIGNALS.implement,
   })
+
+  const verdict = parseImplementerResult(result.stdout)
+  if (verdict.tag === "failed") {
+    throw new Error(`Implementer for #${issue.number} aborted: ${verdict.reason}`)
+  }
 
   // Compare branch against the frozen base, not the per-session commit list —
   // otherwise a resumed run with already-committed work fails here.

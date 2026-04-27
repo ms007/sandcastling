@@ -20,8 +20,11 @@ export function observe(
       aheadOfBase: deps.getCommitsAhead(config.seed.branch),
       markerComments: deps.getMarkerComments(config.seed.number),
       reworkReason: state.reworkReasons.get(config.seed.number) ?? null,
+      blockedBy: [],
     },
-    children: config.children.map((child) => buildSnapshot(child, state, deps)),
+    children: config.children.map((child) =>
+      buildSnapshot(child, state, deps, config.childBlockers?.get(child.number) ?? []),
+    ),
     tickCount: state.tickCount,
     tickCap: config.tickCap,
     attemptCap: config.attemptCap,
@@ -31,12 +34,18 @@ export function observe(
   }
 }
 
-function buildSnapshot(issue: IssueRef, state: WorkflowState, deps: ObserveDeps): IssueSnapshot {
+function buildSnapshot(
+  issue: IssueRef,
+  state: WorkflowState,
+  deps: ObserveDeps,
+  blockedBy: readonly number[],
+): IssueSnapshot {
   return {
     issue,
     phase: state.phases.get(issue.number) ?? "todo",
     aheadOfBase: deps.getCommitsAhead(issue.branch),
     markerComments: deps.getMarkerComments(issue.number),
     reworkReason: state.reworkReasons.get(issue.number) ?? null,
+    blockedBy,
   }
 }

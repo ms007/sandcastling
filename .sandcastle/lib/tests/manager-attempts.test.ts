@@ -24,6 +24,7 @@ const baseObs = (overrides?: Partial<Observation>): Observation => ({
     aheadOfBase: 0,
     markerComments: [],
     reworkReason: null,
+    blockedBy: [],
   },
   children: [],
   tickCount: 0,
@@ -86,6 +87,7 @@ describe("computeObservationHash", () => {
           aheadOfBase: 0,
           markerComments: [],
           reworkReason: null,
+          blockedBy: [],
         },
       ],
     })

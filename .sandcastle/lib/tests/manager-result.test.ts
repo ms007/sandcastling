@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert"
 import { describe, it } from "node:test"
-import { parseReviewerVerdict } from "../manager/result.ts"
+import { parseImplementerResult, parseReviewerVerdict } from "../manager/result.ts"
 
 describe("parseReviewerVerdict", () => {
   it("parses verdict: approved", () => {
@@ -84,5 +84,113 @@ line two
   it("falls back to approved for empty verdict tag", () => {
     const v = parseReviewerVerdict("<verdict></verdict>")
     assert.equal(v.tag, "approved")
+  })
+})
+
+describe("parseImplementerResult", () => {
+  it("returns ok for successful result", () => {
+    const r = parseImplementerResult("output <result>ok</result> trailing")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("returns ok when no result tag is present", () => {
+    const r = parseImplementerResult("no result tag here")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("returns ok for empty stdout", () => {
+    const r = parseImplementerResult("")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("parses failed with reason after colon", () => {
+    const r = parseImplementerResult("<result>failed: missing dependency</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "missing dependency")
+  })
+
+  it("parses CROSS_BRANCH_DEPENDENCY failure verdict", () => {
+    const r = parseImplementerResult(
+      "<result>failed: CROSS_BRANCH_DEPENDENCY: needs types from sandcastle/issue-5</result>",
+    )
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") {
+      assert.equal(r.reason, "CROSS_BRANCH_DEPENDENCY: needs types from sandcastle/issue-5")
+    }
+  })
+
+  it("parses failed with no reason", () => {
+    const r = parseImplementerResult("<result>failed</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "No reason provided")
+  })
+
+  it("returns ok for empty result tag", () => {
+    const r = parseImplementerResult("<result></result>")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("returns ok for whitespace-only result content", () => {
+    const r = parseImplementerResult("<result>   \n  </result>")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("uses first result tag when multiple are present", () => {
+    const r = parseImplementerResult("<result>failed: first</result> <result>ok</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "first")
+  })
+
+  it("handles multi-line failure reason", () => {
+    const stdout = `<result>
+failed: CROSS_BRANCH_DEPENDENCY: needs code from issue #3
+which adds the shared types module
+</result>`
+    const r = parseImplementerResult(stdout)
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") {
+      assert.ok(r.reason.includes("CROSS_BRANCH_DEPENDENCY"))
+      assert.ok(r.reason.includes("shared types module"))
+    }
+  })
+
+  it("parses failed with em dash separator", () => {
+    const r = parseImplementerResult("<result>failed — missing dep</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "missing dep")
+  })
+
+  it("parses failed with en dash separator", () => {
+    const r = parseImplementerResult("<result>failed – missing dep</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "missing dep")
+  })
+
+  it("parses failed with hyphen separator", () => {
+    const r = parseImplementerResult("<result>failed - missing dep</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "missing dep")
+  })
+
+  it("returns 'No reason provided' for failed with only separator", () => {
+    const r = parseImplementerResult("<result>failed:</result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "No reason provided")
+  })
+
+  it("trims whitespace around failed keyword", () => {
+    const r = parseImplementerResult("<result>  failed: reason here  </result>")
+    assert.equal(r.tag, "failed")
+    if (r.tag === "failed") assert.equal(r.reason, "reason here")
+  })
+
+  it("returns ok for capitalized Failed (case-sensitive match)", () => {
+    const r = parseImplementerResult("<result>Failed: something</result>")
+    assert.equal(r.tag, "ok")
+  })
+
+  it("returns ok for non-failed prefix like failure", () => {
+    const r = parseImplementerResult("<result>failure mode</result>")
+    assert.equal(r.tag, "ok")
   })
 })

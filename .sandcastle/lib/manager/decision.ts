@@ -53,22 +53,32 @@ function decideLeaf(obs: Observation): Decision {
 }
 
 function decidePrd(obs: Observation): Decision {
-  const childAction = nextChildAction(obs.children)
-  if (childAction) return { tag: "act", action: childAction }
-
-  if (obs.children.length > 0 && obs.children.every((c) => c.phase === "reviewed")) {
-    return {
-      tag: "act",
-      action: { tag: "runMerger", issues: obs.children.map((c) => c.issue) },
-    }
-  }
+  const waveAssignments = assignWaves(obs.children)
 
   const mergedChild = obs.children.find((c) => c.phase === "merged")
   if (mergedChild) {
-    return {
-      tag: "act",
-      action: { tag: "finalizeIssue", issue: mergedChild.issue },
-    }
+    return actWithWave(
+      { tag: "finalizeIssue", issue: mergedChild.issue },
+      mergedChild.issue.number,
+      waveAssignments,
+    )
+  }
+
+  const wave = computeWave(obs.children)
+
+  const childAction = nextChildAction(wave)
+  if (childAction) {
+    const target =
+      childAction.tag === "runMerger" ? childAction.issues[0]?.number : childAction.issue.number
+    return actWithWave(childAction, target, waveAssignments)
+  }
+
+  if (wave.length > 0 && wave.every((c) => c.phase === "reviewed")) {
+    return actWithWave(
+      { tag: "runMerger", issues: wave.map((c) => c.issue) },
+      wave[0]?.issue.number,
+      waveAssignments,
+    )
   }
 
   if (
@@ -83,6 +93,16 @@ function decidePrd(obs: Observation): Decision {
   }
 
   return { tag: "done" }
+}
+
+function computeWave(children: readonly IssueSnapshot[]): readonly IssueSnapshot[] {
+  const childNumbers = new Set(children.map((c) => c.issue.number))
+  const doneNumbers = new Set(children.filter((c) => c.phase === "done").map((c) => c.issue.number))
+  return children.filter((child) => {
+    if (child.phase === "done") return false
+    const internalBlockers = child.blockedBy.filter((b) => childNumbers.has(b))
+    return internalBlockers.every((b) => doneNumbers.has(b))
+  })
 }
 
 function nextChildAction(children: readonly IssueSnapshot[]): Action | null {
@@ -112,4 +132,38 @@ function nextIssueAction(snapshot: IssueSnapshot): Action | null {
     default:
       return null
   }
+}
+
+function assignWaves(children: readonly IssueSnapshot[]): ReadonlyMap<number, number> {
+  const childNumbers = new Set(children.map((c) => c.issue.number))
+  const result = new Map<number, number>()
+  let index = 0
+  for (;;) {
+    const layer = children.filter((child) => {
+      if (result.has(child.issue.number)) return false
+      const internalBlockers = child.blockedBy.filter((b) => childNumbers.has(b))
+      return internalBlockers.every((b) => result.has(b))
+    })
+    if (layer.length === 0) break
+    for (const child of layer) {
+      result.set(child.issue.number, index)
+    }
+    index++
+  }
+  return result
+}
+
+function actWithWave(
+  action: Action,
+  targetNumber: number | undefined,
+  assignments: ReadonlyMap<number, number>,
+): Decision {
+  if (targetNumber === undefined) return { tag: "act", action }
+  const index = assignments.get(targetNumber)
+  if (index === undefined) return { tag: "act", action }
+  const issues = [...assignments.entries()]
+    .filter(([, i]) => i === index)
+    .map(([n]) => n)
+    .sort((a, b) => a - b)
+  return { tag: "act", action, wave: { index, issues } }
 }

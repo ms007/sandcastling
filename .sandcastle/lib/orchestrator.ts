@@ -151,9 +151,11 @@ function buildConfig(
   caps: { tickCap: number; attemptCap: number },
 ): WorkflowConfig {
   const children = report.children.map(toIssueRef)
+  const childBlockers = new Map(report.children.map((c) => [c.number, c.blockedBy]))
   return {
     seed: { ...toIssueRef(report.seed), isPrd: children.length > 0 },
     children,
+    childBlockers,
     tickCap: caps.tickCap,
     attemptCap: caps.attemptCap,
   }
@@ -248,6 +250,47 @@ export function commitMergerResultToBaseRef(
   }
 }
 
+/**
+ * Commit a single wave's merger result and return the evolved base ref
+ * for the next wave. Wraps commitMergerResultToBaseRef with wave-index
+ * error context and post-CAS base-ref advancement.
+ *
+ * - Non-detached success: base branch was advanced by CAS; resolves it
+ *   for the new SHA.
+ * - Detached HEAD: temp branch preserved; resolves it for the new SHA.
+ * - Failure: re-throws with wave context so the terminal log names the
+ *   failed wave.
+ */
+export function commitWaveMergerResult(
+  baseRef: BaseRef,
+  mergeBranch: string,
+  waveIndex: number,
+  log: (msg: string) => void,
+): BaseRef {
+  try {
+    commitMergerResultToBaseRef(baseRef, mergeBranch, log)
+  } catch (err) {
+    throw new Error(
+      `Wave ${waveIndex + 1} merger failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    )
+  }
+
+  if (baseRef.refName === "HEAD") {
+    const tip = resolveRef(mergeBranch)
+    if (tip.kind === "resolved") {
+      return { sha: tip.sha, refName: "HEAD" }
+    }
+    return baseRef
+  }
+
+  const tip = resolveRef(baseRef.refName)
+  if (tip.kind === "resolved") {
+    return { sha: tip.sha, refName: baseRef.refName }
+  }
+  return baseRef
+}
+
 function buildActionDeps(
   ctx: ProjectContext,
   baseRef: BaseRef,
@@ -255,6 +298,9 @@ function buildActionDeps(
   model: string,
   sandboxes: SandboxCache,
 ): ActionDeps {
+  let mergerBaseRef = baseRef
+  let waveIndex = 0
+
   return {
     moveStatus: (itemId, status) => moveStatus(ctx, itemId, status),
     unblockDependents: async (n) => unblockDependents(ctx, n),
@@ -279,21 +325,22 @@ function buildActionDeps(
         priorAttempts,
         model,
       })
-      // Approved: no further stages will need this sandbox. Free it now to
-      // keep the concurrent-container count bounded; rework keeps it open.
       if (verdict.tag === "approved") await sandboxes.release(issue.number)
       return verdict
     },
     runMerger: async (issues, priorAttempts) => {
+      const currentWave = waveIndex
+      const currentBaseRef = mergerBaseRef
       const mergeBranch = tempMergerBranchName(seedNumber)
       await runMerger({
         issues,
-        baseRef,
+        baseRef: currentBaseRef,
         mergeBranch,
         priorAttempts,
         model,
       })
-      commitMergerResultToBaseRef(baseRef, mergeBranch, console.log)
+      mergerBaseRef = commitWaveMergerResult(currentBaseRef, mergeBranch, currentWave, console.log)
+      waveIndex++
       await Promise.all(issues.map((i) => sandboxes.release(i.number)))
     },
     postMarkerComment: async (n, body) => {
@@ -367,13 +414,15 @@ function summarizeTickEvent(event: TickEvent): unknown {
 
 function summarizeDecision(decision: TickEvent["decision"]): unknown {
   if (decision.tag !== "act") return decision
-  const { action } = decision
+  const { action, wave } = decision
+  const waveInfo = wave ? { wave: { index: wave.index, issues: [...wave.issues] } } : {}
   switch (action.tag) {
     case "runMerger":
       return {
         tag: "act",
         action: action.tag,
         issues: action.issues.map((i) => i.number),
+        ...waveInfo,
       }
     case "applyReworkVerdict":
       return {
@@ -381,8 +430,9 @@ function summarizeDecision(decision: TickEvent["decision"]): unknown {
         action: action.tag,
         issue: action.issue.number,
         reason: action.reason,
+        ...waveInfo,
       }
     default:
-      return { tag: "act", action: action.tag, issue: action.issue.number }
+      return { tag: "act", action: action.tag, issue: action.issue.number, ...waveInfo }
   }
 }

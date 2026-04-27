@@ -1,23 +1,14 @@
 import type { RunOptions } from "@ai-hero/sandcastle"
 import * as sandcastle from "@ai-hero/sandcastle"
-import { claudeCustom } from "./agent.ts"
-import { docker } from "./docker.ts"
+import {
+  type ResolvedContainerStageConfig,
+  type ResolvedStageConfig,
+  spreadOptional,
+} from "./config.ts"
 import { type BaseRef, countCommitsAhead, formatBaseRef } from "./git.ts"
 import { parseImplementerResult, parseReviewerVerdict } from "./manager/result.ts"
 import type { ReviewerVerdict } from "./manager/types.ts"
 import type { IssueRef } from "./types.ts"
-
-export const DEFAULT_AGENT_MODEL = "claude-opus-4-6"
-const INSTALL_HOOKS = {
-  sandbox: {
-    onSandboxReady: [{ command: "pnpm install --prefer-offline" }],
-  },
-} as const
-const PROMPTS = {
-  implement: "./.sandcastle/prompts/implement.md",
-  review: "./.sandcastle/prompts/review.md",
-  merge: "./.sandcastle/prompts/merge.md",
-} as const
 
 const COMPLETION_SIGNALS = {
   implement: "</result>",
@@ -32,31 +23,29 @@ const issuePromptArgs = (issue: IssueRef, priorAttempts = "") => ({
   PRIOR_ATTEMPTS: priorAttempts,
 })
 
-export const createIssueSandbox = (issue: IssueRef): Promise<sandcastle.Sandbox> =>
-  sandcastle.createSandbox({
-    sandbox: docker(),
-    branch: issue.branch,
-    hooks: INSTALL_HOOKS,
-  })
-
 export const runImplementer = async ({
   sandbox,
   issue,
   baseRef,
   priorAttempts = "",
-  model = DEFAULT_AGENT_MODEL,
+  config,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
   baseRef: BaseRef
   priorAttempts?: string
-  model?: string
+  config: ResolvedStageConfig
 }): Promise<void> => {
   const result = await sandbox.run({
     name: `Implementer #${issue.number}`,
-    agent: claudeCustom(model),
-    promptFile: PROMPTS.implement,
-    promptArgs: issuePromptArgs(issue, priorAttempts),
+    agent: config.agent,
+    promptFile: config.promptFile,
+    ...spreadOptional("idleTimeoutSeconds", config.idleTimeoutSeconds),
+    ...spreadOptional("maxIterations", config.maxIterations),
+    promptArgs: {
+      ...config.promptArgs,
+      ...issuePromptArgs(issue, priorAttempts),
+    },
     completionSignal: COMPLETION_SIGNALS.implement,
   })
 
@@ -65,8 +54,6 @@ export const runImplementer = async ({
     throw new Error(`Implementer for #${issue.number} aborted: ${verdict.reason}`)
   }
 
-  // Compare branch against the frozen base, not the per-session commit list —
-  // otherwise a resumed run with already-committed work fails here.
   const totalAhead = countCommitsAhead(baseRef.sha, issue.branch)
   const baseLabel = formatBaseRef(baseRef)
   if (totalAhead === 0) {
@@ -84,18 +71,23 @@ export const runReviewer = async ({
   sandbox,
   issue,
   priorAttempts = "",
-  model = DEFAULT_AGENT_MODEL,
+  config,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
   priorAttempts?: string
-  model?: string
+  config: ResolvedStageConfig
 }): Promise<ReviewerVerdict> => {
   const result = await sandbox.run({
     name: `Reviewer #${issue.number}`,
-    agent: claudeCustom(model),
-    promptFile: PROMPTS.review,
-    promptArgs: issuePromptArgs(issue, priorAttempts),
+    agent: config.agent,
+    promptFile: config.promptFile,
+    ...spreadOptional("idleTimeoutSeconds", config.idleTimeoutSeconds),
+    ...spreadOptional("maxIterations", config.maxIterations),
+    promptArgs: {
+      ...config.promptArgs,
+      ...issuePromptArgs(issue, priorAttempts),
+    },
     completionSignal: COMPLETION_SIGNALS.review,
   })
 
@@ -107,7 +99,7 @@ interface MergerParams {
   readonly baseRef: BaseRef
   readonly mergeBranch: string
   readonly priorAttempts?: string
-  readonly model?: string
+  readonly config: ResolvedContainerStageConfig
 }
 
 const buildMergerRunOptions = ({
@@ -115,13 +107,17 @@ const buildMergerRunOptions = ({
   baseRef,
   mergeBranch,
   priorAttempts = "",
-  model = DEFAULT_AGENT_MODEL,
+  config,
 }: MergerParams): RunOptions => ({
-  sandbox: docker(),
+  sandbox: config.sandbox,
+  ...spreadOptional("hooks", config.hooks),
   name: "Merger",
-  agent: claudeCustom(model),
-  promptFile: PROMPTS.merge,
+  agent: config.agent,
+  promptFile: config.promptFile,
+  ...spreadOptional("idleTimeoutSeconds", config.idleTimeoutSeconds),
+  ...spreadOptional("maxIterations", config.maxIterations),
   promptArgs: {
+    ...config.promptArgs,
     BRANCH_LIST: issues.map((i) => `- ${i.branch}`).join("\n"),
     ISSUE_LIST: issues.map((i) => `- #${i.number}: ${i.title}`).join("\n"),
     BASE_LABEL: formatBaseRef(baseRef),
@@ -129,7 +125,6 @@ const buildMergerRunOptions = ({
   },
   branchStrategy: { type: "branch", branch: mergeBranch, baseBranch: baseRef.sha },
   completionSignal: COMPLETION_SIGNALS.merge,
-  hooks: INSTALL_HOOKS,
 })
 
 export const runMerger = async (params: MergerParams): Promise<void> => {

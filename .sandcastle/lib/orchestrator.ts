@@ -1,14 +1,15 @@
-/**
- * `main.ts` is intentionally thin and only exposes the user-facing knobs
- * (caps, model, transcript). Everything else — adapter wiring against gh,
- * git, the Docker sandbox, the project board, and the transcript sink —
- * lives here.
- */
 import { execFile, execFileSync } from "node:child_process"
 import { appendFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import type * as sandcastle from "@ai-hero/sandcastle"
+import * as sandcastle from "@ai-hero/sandcastle"
+import {
+  type OrchestratorOptions,
+  type ResolvedConfig,
+  resolveConfig,
+  spreadOptional,
+} from "./config.ts"
+import { type BaseRef, captureBaseRef, countCommitsAhead } from "./git.ts"
 import {
   casFastForward,
   listWorktreesForBranch,
@@ -17,16 +18,6 @@ import {
   shortSha,
   tempMergerBranchName,
 } from "./git.ts"
-import {
-  type BaseRef,
-  DEFAULT_AGENT_MODEL,
-  captureBaseRef,
-  countCommitsAhead,
-  createIssueSandbox,
-  runImplementer,
-  runMerger,
-  runReviewer,
-} from "./index.ts"
 import {
   type ActionDeps,
   DEFAULT_ATTEMPT_CAP,
@@ -51,6 +42,7 @@ import {
   resolveProject,
   unblockDependents,
 } from "./project.ts"
+import { runImplementer, runMerger, runReviewer } from "./stages.ts"
 
 const execFileP = promisify(execFile)
 
@@ -59,41 +51,34 @@ export type TranscriptOption =
   | { readonly kind: "hook"; readonly onTick: (event: TickEvent) => void }
   | { readonly kind: "off" }
 
-export interface OrchestratorOptions {
-  readonly tickCap?: number
-  readonly attemptCap?: number
-  readonly model?: string
-  readonly transcript?: TranscriptOption
-}
-
-export async function runOrchestrator(
-  seedNumber: number,
-  options: OrchestratorOptions = {},
-): Promise<WorkflowResult> {
-  const tickCap = options.tickCap ?? DEFAULT_TICK_CAP
-  const attemptCap = options.attemptCap ?? DEFAULT_ATTEMPT_CAP
-  const model = options.model ?? DEFAULT_AGENT_MODEL
-  const transcript: TranscriptOption = options.transcript ?? { kind: "file" }
+export async function runOrchestrator(options: OrchestratorOptions): Promise<WorkflowResult> {
+  const resolved = resolveConfig(options, {
+    tickCap: DEFAULT_TICK_CAP,
+    attemptCap: DEFAULT_ATTEMPT_CAP,
+  })
 
   const repoP = detectRepo()
   const baseRef = captureBaseRef()
   const { owner, repo } = await repoP
   const ctx = await resolveProject(owner, repo)
-  const report = await getRelatedIssues(ctx, seedNumber, defaultBranchLookup(baseRef.sha))
+  const report = await getRelatedIssues(ctx, resolved.seedIssue, defaultBranchLookup(baseRef.sha))
 
-  const config = buildConfig(report, { tickCap, attemptCap })
+  const config = buildWorkflowConfig(report, {
+    tickCap: resolved.tickCap,
+    attemptCap: resolved.attemptCap,
+  })
   console.log(
     `Seed #${config.seed.number} ${config.seed.isPrd ? "(PRD)" : ""} with ${config.children.length} child issue(s).`,
   )
 
-  const sink = await openTranscriptSink(seedNumber, owner, repo, transcript)
+  const sink = await openTranscriptSink(resolved.seedIssue, owner, repo, resolved.transcript)
   if (sink.path) console.log(`Transcript: ${sink.path}`)
 
-  const sandboxes = createSandboxCache()
+  const sandboxes = createSandboxCache(resolved)
 
   const deps: WorkflowDeps = {
     observe: buildObserveDeps(baseRef),
-    actions: buildActionDeps(ctx, baseRef, seedNumber, model, sandboxes),
+    actions: buildActionDeps(ctx, baseRef, resolved, sandboxes),
     hooks: { onTick: sink.onTick },
   }
 
@@ -114,21 +99,19 @@ const closeQuiet = async (pending: Promise<sandcastle.Sandbox>): Promise<void> =
   if (sandbox) await sandbox.close().catch(() => {})
 }
 
-/**
- * Per-issue sandbox cache. The same container is reused across the
- * implementer, reviewer, and any rework cycles for a given issue. Containers
- * are released eagerly on terminal phases (approved review, merge) so the
- * concurrent-container count stays at 1 even on long workflows; any survivors
- * are torn down by `disposeAll` in the orchestrator's `finally` block.
- */
-function createSandboxCache() {
+function createSandboxCache(resolved: ResolvedConfig) {
+  const { sandbox, hooks } = resolved.stages.implement
   const open = new Map<number, Promise<sandcastle.Sandbox>>()
 
   return {
     get: (issue: IssueRef): Promise<sandcastle.Sandbox> => {
       const existing = open.get(issue.number)
       if (existing) return existing
-      const created = createIssueSandbox(issue)
+      const created = sandcastle.createSandbox({
+        sandbox,
+        branch: issue.branch,
+        ...spreadOptional("hooks", hooks),
+      })
       open.set(issue.number, created)
       return created
     },
@@ -146,7 +129,7 @@ function createSandboxCache() {
   }
 }
 
-function buildConfig(
+function buildWorkflowConfig(
   report: { seed: RelatedIssue; children: readonly RelatedIssue[] },
   caps: { tickCap: number; attemptCap: number },
 ): WorkflowConfig {
@@ -188,15 +171,6 @@ function fetchMarkerCommentsSync(issueNumber: number): readonly MarkerComment[] 
     .map((c) => ({ body: c.body }))
 }
 
-/**
- * After the merger sandbox returns, land the result on the developer's
- * original branch via an atomic compare-and-set fast-forward.
- *
- * - Detached HEAD at run start: no ref update, temp branch preserved.
- * - Base branch moved concurrently: throws, temp branch preserved.
- * - Finally block: best-effort non-force delete of the temp branch — cleans
- *   up empty orphans but refuses to discard a branch with unmerged commits.
- */
 export function commitMergerResultToBaseRef(
   baseRef: BaseRef,
   mergeBranch: string,
@@ -237,9 +211,6 @@ export function commitMergerResultToBaseRef(
         )
     }
   } finally {
-    // Best-effort cleanup of an orphaned temp branch when the success path
-    // (which force-deletes inline) didn't run. Non-force so a branch with
-    // unmerged commits is preserved for manual recovery.
     if (resolveRef(mergeBranch).kind === "resolved") {
       try {
         safeDeleteBranch(mergeBranch)
@@ -250,17 +221,6 @@ export function commitMergerResultToBaseRef(
   }
 }
 
-/**
- * Commit a single wave's merger result and return the evolved base ref
- * for the next wave. Wraps commitMergerResultToBaseRef with wave-index
- * error context and post-CAS base-ref advancement.
- *
- * - Non-detached success: base branch was advanced by CAS; resolves it
- *   for the new SHA.
- * - Detached HEAD: temp branch preserved; resolves it for the new SHA.
- * - Failure: re-throws with wave context so the terminal log names the
- *   failed wave.
- */
 export function commitWaveMergerResult(
   baseRef: BaseRef,
   mergeBranch: string,
@@ -294,10 +254,10 @@ export function commitWaveMergerResult(
 function buildActionDeps(
   ctx: ProjectContext,
   baseRef: BaseRef,
-  seedNumber: number,
-  model: string,
+  resolved: ResolvedConfig,
   sandboxes: SandboxCache,
 ): ActionDeps {
+  const { implement, review, merge } = resolved.stages
   let mergerBaseRef = baseRef
   let waveIndex = 0
 
@@ -314,7 +274,7 @@ function buildActionDeps(
         issue,
         baseRef,
         priorAttempts,
-        model,
+        config: implement,
       })
     },
     runReviewer: async (issue, priorAttempts) => {
@@ -323,7 +283,7 @@ function buildActionDeps(
         sandbox,
         issue,
         priorAttempts,
-        model,
+        config: review,
       })
       if (verdict.tag === "approved") await sandboxes.release(issue.number)
       return verdict
@@ -331,13 +291,13 @@ function buildActionDeps(
     runMerger: async (issues, priorAttempts) => {
       const currentWave = waveIndex
       const currentBaseRef = mergerBaseRef
-      const mergeBranch = tempMergerBranchName(seedNumber)
+      const mergeBranch = tempMergerBranchName(resolved.seedIssue)
       await runMerger({
         issues,
         baseRef: currentBaseRef,
         mergeBranch,
         priorAttempts,
-        model,
+        config: merge,
       })
       mergerBaseRef = commitWaveMergerResult(currentBaseRef, mergeBranch, currentWave, console.log)
       waveIndex++
@@ -352,7 +312,6 @@ function buildActionDeps(
 
 interface TranscriptSink {
   readonly onTick: (event: TickEvent) => void
-  /** Set when writing to a file — caller logs it once at startup. */
   readonly path?: string
   close(result: WorkflowResult | null): Promise<void>
 }
@@ -375,9 +334,6 @@ async function openTranscriptSink(
   const path = join(dir, `workflow-seed-${seedNumber}-${stamp}.log`)
   await appendFile(path, `[start] seed=${seedNumber} owner=${owner} repo=${repo}\n`)
 
-  // Serialize appends so tick lines never interleave. The `.catch` keeps a
-  // single failed write from poisoning every subsequent append as an
-  // unhandled rejection.
   let writeChain: Promise<void> = Promise.resolve()
   const append = (line: string) => {
     writeChain = writeChain.then(() => appendFile(path, line)).catch(() => {})

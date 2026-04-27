@@ -1,9 +1,3 @@
-/**
- * Custom Docker-backed bind-mount sandbox provider for `@ai-hero/sandcastle`.
- *
- * See `./docker.ts` and `./chown.ts` for the design notes that explain why
- * this lives in the project instead of using the upstream provider directly.
- */
 export {
   type BaseRef,
   type BranchCommit,
@@ -14,14 +8,8 @@ export {
   issueBranchName,
   readBranchInfo,
 } from "./git.ts"
+export { docker, type DockerOptions } from "./docker.ts"
 export {
-  docker,
-  DEFAULT_DOCKER_OPTIONS,
-  type DockerOptions,
-} from "./docker.ts"
-export {
-  createIssueSandbox,
-  DEFAULT_AGENT_MODEL,
   runImplementer,
   runMerger,
   runReviewer,
@@ -33,7 +21,7 @@ export {
   type VolumeMount,
   type WorkspaceVolumeNames,
 } from "./volumes.ts"
-export { claudeCustom } from "./agent.ts"
+export { wrapAgentProvider } from "./agent.ts"
 export {
   type BranchLookup,
   defaultBranchLookup,
@@ -49,3 +37,13 @@ export {
   resolveProject,
   type StatusName,
 } from "./project.ts"
+export {
+  type OrchestratorOptions,
+  type StageConfig,
+  type ContainerStageConfig,
+  type ResolvedConfig,
+  type ResolvedStageConfig,
+  type ResolvedContainerStageConfig,
+  resolveConfig,
+} from "./config.ts"
+export { runOrchestrator, type TranscriptOption } from "./orchestrator.ts"

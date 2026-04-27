@@ -1,24 +1,14 @@
 /**
- * Custom Claude Code agent provider that wraps `sandcastle.claudeCode` and
- * injects a `--system-prompt` flag, replacing Claude Code's built-in system
- * prompt with the contents of `.sandcastle/prompts/system.md`.
- *
- * The path is resolved relative to the current working directory; this assumes
- * the script is launched from the project root (which `pnpm sandcastle` guarantees).
+ * Generic AgentProvider wrapper that injects a `--system-prompt` flag,
+ * replacing Claude Code's built-in system prompt with caller-supplied
+ * content. Project-specific wiring (which file to read, which model) lives
+ * in user code outside the lib.
  */
-import { readFileSync } from "node:fs"
-import * as sandcastle from "@ai-hero/sandcastle"
-
-const SYSTEM_PROMPT_PATH = "./.sandcastle/prompts/system.md"
-
-let cachedSystemPrompt: string | undefined
+import type { AgentProvider } from "@ai-hero/sandcastle"
 
 const shellEscape = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`
 
-export const wrapAgentProvider = (
-  base: sandcastle.AgentProvider,
-  systemPrompt: string,
-): sandcastle.AgentProvider => {
+export const wrapAgentProvider = (base: AgentProvider, systemPrompt: string): AgentProvider => {
   const flag = ` --system-prompt ${shellEscape(systemPrompt)}`
   const baseInteractive = base.buildInteractiveArgs
 
@@ -29,7 +19,7 @@ export const wrapAgentProvider = (
       const patched = result.command.replace("claude --print", `claude --print${flag}`)
       if (patched === result.command) {
         throw new Error(
-          "claudeCustom: failed to inject --system-prompt — sandcastle's claude command format may have changed.",
+          "wrapAgentProvider: failed to inject --system-prompt — sandcastle's claude command format may have changed.",
         )
       }
       return result.stdin === undefined
@@ -46,14 +36,6 @@ export const wrapAgentProvider = (
       },
     }),
   }
-}
-
-export const claudeCustom = (
-  model: string,
-  options?: sandcastle.ClaudeCodeOptions,
-): sandcastle.AgentProvider => {
-  cachedSystemPrompt ??= readFileSync(SYSTEM_PROMPT_PATH, "utf8")
-  return wrapAgentProvider(sandcastle.claudeCode(model, options), cachedSystemPrompt)
 }
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */

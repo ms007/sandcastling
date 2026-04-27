@@ -28,7 +28,7 @@ import {
   runDocker,
   spawnDocker,
 } from "./internal.ts"
-import { type VolumeMount, workspaceVolumes } from "./volumes.ts"
+import type { VolumeMount } from "./volumes.ts"
 
 /** Configuration for the {@link docker} provider. */
 export interface DockerOptions {
@@ -44,25 +44,11 @@ export interface DockerOptions {
 }
 
 /**
- * Defaults: target the `sandcastle:latest` image and warm-mount `node_modules/`
- * and `.pnpm-store/` as named volumes. Override with explicit options when
- * running against a different image or repo.
+ * Build a Sandcastle bind-mount provider backed by Docker. Caller supplies
+ * the image tag and any persistent named volumes to overlay onto the
+ * workspace; the provider itself stays project-agnostic.
  */
-export const DEFAULT_DOCKER_OPTIONS: DockerOptions = {
-  imageName: "sandcastle:latest",
-  volumes: workspaceVolumes({
-    nodeModules: "sandcastle-node-modules",
-    pnpmStore: "sandcastle-pnpm-store",
-  }),
-}
-
-/**
- * Build a Sandcastle bind-mount provider backed by Docker.
- *
- * Called without arguments, uses {@link DEFAULT_DOCKER_OPTIONS} so callers can
- * write `docker()` and stay clutter-free in main.ts.
- */
-export function docker(options: DockerOptions = DEFAULT_DOCKER_OPTIONS): BindMountSandboxProvider {
+export function docker(options: DockerOptions): BindMountSandboxProvider {
   return createBindMountSandboxProvider({
     name: "docker",
     sandboxHomedir: SANDBOX_HOME,

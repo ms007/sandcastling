@@ -1,8 +1,14 @@
 import { strict as assert } from "node:assert"
 import { describe, it } from "node:test"
+import type { AgentProvider, SandboxProvider } from "@ai-hero/sandcastle"
+import { WORKFLOW_TOKENS, __testing as configTesting, resolveConfig } from "../config.ts"
 import { __testing } from "../stages.ts"
 
 const { issuePromptArgs, buildMergerRunOptions } = __testing
+const { validateStage, resolveContainerStage } = configTesting
+
+const fakeAgent = { name: "fake-agent" } as unknown as AgentProvider
+const fakeSandbox = { name: "fake-sandbox" } as unknown as SandboxProvider
 
 describe("issuePromptArgs", () => {
   it("returns the prompt-template fields with an empty PRIOR_ATTEMPTS by default", () => {
@@ -49,8 +55,15 @@ describe("buildMergerRunOptions", () => {
     { number: 2, title: "fix: beta", itemId: "PVTI_b", branch: "sandcastle/issue-2" },
   ]
 
+  const mergeConfig = {
+    agent: fakeAgent,
+    promptFile: "./.sandcastle/prompts/merge.md",
+    promptArgs: {},
+    sandbox: fakeSandbox,
+  }
+
   it("uses a named-branch strategy forked from baseRef.sha", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch })
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
     assert.deepEqual(opts.branchStrategy, {
       type: "branch",
       branch: mergeBranch,
@@ -59,18 +72,18 @@ describe("buildMergerRunOptions", () => {
   })
 
   it("populates BASE_LABEL from the formatted baseRef", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch })
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
     assert.equal(opts.promptArgs?.BASE_LABEL, "main (abcdef1)")
   })
 
   it("includes BRANCH_LIST and ISSUE_LIST in promptArgs", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch })
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #1: feat: alpha\n- #2: fix: beta")
   })
 
   it("defaults PRIOR_ATTEMPTS to empty string", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch })
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "")
   })
 
@@ -80,12 +93,18 @@ describe("buildMergerRunOptions", () => {
       baseRef,
       mergeBranch,
       priorAttempts: "attempt #2 failed",
+      config: mergeConfig,
     })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "attempt #2 failed")
   })
 
   it("handles empty issues array (produces empty BRANCH_LIST and ISSUE_LIST)", () => {
-    const opts = buildMergerRunOptions({ issues: [], baseRef, mergeBranch })
+    const opts = buildMergerRunOptions({
+      issues: [],
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+    })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "")
   })
@@ -95,8 +114,277 @@ describe("buildMergerRunOptions", () => {
       issues: [{ number: 99, title: "chore: cleanup", itemId: "X", branch: "sandcastle/issue-99" }],
       baseRef,
       mergeBranch,
+      config: mergeConfig,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-99")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #99: chore: cleanup")
+  })
+
+  it("passes config.agent and config.sandbox into RunOptions", () => {
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    assert.equal(opts.agent, fakeAgent)
+    assert.equal(opts.sandbox, fakeSandbox)
+  })
+
+  it("passes config.promptFile into RunOptions", () => {
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    assert.equal(opts.promptFile, "./.sandcastle/prompts/merge.md")
+  })
+
+  it("passes idleTimeoutSeconds and maxIterations when set", () => {
+    const config = { ...mergeConfig, idleTimeoutSeconds: 300, maxIterations: 3 }
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    assert.equal(opts.idleTimeoutSeconds, 300)
+    assert.equal(opts.maxIterations, 3)
+  })
+
+  it("omits idleTimeoutSeconds and maxIterations when not set", () => {
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    assert.equal("idleTimeoutSeconds" in opts, false)
+    assert.equal("maxIterations" in opts, false)
+  })
+
+  it("preserves user promptArgs alongside workflow-owned tokens", () => {
+    const config = { ...mergeConfig, promptArgs: { CUSTOM: "value" } }
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    assert.equal(opts.promptArgs?.CUSTOM, "value")
+    assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
+  })
+
+  it("omits hooks from RunOptions when config.hooks is absent", () => {
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    assert.equal("hooks" in opts, false)
+  })
+
+  it("passes hooks when config.hooks is present", () => {
+    const hooks = { sandbox: { onSandboxReady: [{ command: "echo hi" }] } } as const
+    const config = { ...mergeConfig, hooks }
+    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    assert.deepEqual(opts.hooks, hooks)
+  })
+})
+
+describe("resolveConfig", () => {
+  const defaults = { tickCap: 50, attemptCap: 3 }
+
+  const baseOptions = {
+    seedIssue: 42,
+    sandbox: fakeSandbox,
+    stages: {
+      implement: { agent: fakeAgent, promptFile: "implement.md" },
+      review: { agent: fakeAgent, promptFile: "review.md" },
+      merge: { agent: fakeAgent, promptFile: "merge.md" },
+    },
+  }
+
+  it("resolves a minimal valid config with defaults", () => {
+    const resolved = resolveConfig(baseOptions, defaults)
+    assert.equal(resolved.seedIssue, 42)
+    assert.equal(resolved.tickCap, 50)
+    assert.equal(resolved.attemptCap, 3)
+    assert.deepEqual(resolved.transcript, { kind: "file" })
+  })
+
+  it("throws when seedIssue is not a positive integer", () => {
+    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: 0 }, defaults), /seedIssue/)
+    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: -1 }, defaults), /seedIssue/)
+    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: 1.5 }, defaults), /seedIssue/)
+    assert.throws(
+      () =>
+        resolveConfig({ ...baseOptions, seedIssue: Number.NaN } as typeof baseOptions, defaults),
+      /seedIssue/,
+    )
+    assert.throws(
+      () =>
+        resolveConfig(
+          { ...baseOptions, seedIssue: Number.POSITIVE_INFINITY } as typeof baseOptions,
+          defaults,
+        ),
+      /seedIssue/,
+    )
+  })
+
+  it("uses orchestrator-level sandbox as fallback for container stages", () => {
+    const globalSandbox = { name: "global" } as unknown as SandboxProvider
+    const resolved = resolveConfig({ ...baseOptions, sandbox: globalSandbox }, defaults)
+    assert.equal(resolved.stages.implement.sandbox, globalSandbox)
+    assert.equal(resolved.stages.merge.sandbox, globalSandbox)
+  })
+
+  it("per-stage sandbox overrides the global sandbox", () => {
+    const stageSandbox = { name: "stage" } as unknown as SandboxProvider
+    const options = {
+      ...baseOptions,
+      stages: {
+        ...baseOptions.stages,
+        implement: { ...baseOptions.stages.implement, sandbox: stageSandbox },
+      },
+    }
+    const resolved = resolveConfig(options, defaults)
+    assert.equal(resolved.stages.implement.sandbox, stageSandbox)
+    assert.equal(resolved.stages.merge.sandbox, fakeSandbox)
+  })
+
+  it("per-stage hooks override the global hooks", () => {
+    const globalHooks = { sandbox: { onSandboxReady: [{ command: "global" }] } } as const
+    const stageHooks = { sandbox: { onSandboxReady: [{ command: "stage" }] } } as const
+    const options = {
+      ...baseOptions,
+      hooks: globalHooks,
+      stages: {
+        ...baseOptions.stages,
+        merge: { ...baseOptions.stages.merge, hooks: stageHooks },
+      },
+    }
+    const resolved = resolveConfig(options, defaults)
+    assert.deepEqual(resolved.stages.implement.hooks, globalHooks)
+    assert.deepEqual(resolved.stages.merge.hooks, stageHooks)
+  })
+
+  it("propagates user-provided tickCap and attemptCap", () => {
+    const resolved = resolveConfig({ ...baseOptions, tickCap: 10, attemptCap: 5 }, defaults)
+    assert.equal(resolved.tickCap, 10)
+    assert.equal(resolved.attemptCap, 5)
+  })
+
+  it("propagates user-provided transcript option", () => {
+    const resolved = resolveConfig({ ...baseOptions, transcript: { kind: "off" } }, defaults)
+    assert.deepEqual(resolved.transcript, { kind: "off" })
+  })
+})
+
+describe("validateStage", () => {
+  it("rejects promptArgs that collide with implement workflow tokens", () => {
+    for (const token of WORKFLOW_TOKENS.implement) {
+      assert.throws(
+        () =>
+          validateStage(
+            "implement",
+            { agent: fakeAgent, promptFile: "f.md", promptArgs: { [token]: "x" } },
+            WORKFLOW_TOKENS.implement,
+          ),
+        new RegExp(`"${token}" collides`),
+      )
+    }
+  })
+
+  it("rejects promptArgs that collide with merge workflow tokens", () => {
+    for (const token of WORKFLOW_TOKENS.merge) {
+      assert.throws(
+        () =>
+          validateStage(
+            "merge",
+            { agent: fakeAgent, promptFile: "f.md", promptArgs: { [token]: "x" } },
+            WORKFLOW_TOKENS.merge,
+          ),
+        new RegExp(`"${token}" collides`),
+      )
+    }
+  })
+
+  it("allows non-colliding user promptArgs", () => {
+    const result = validateStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md", promptArgs: { CUSTOM: "val" } },
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.deepEqual(result.promptArgs, { CUSTOM: "val" })
+  })
+
+  it("defaults promptArgs to empty object", () => {
+    const result = validateStage(
+      "review",
+      { agent: fakeAgent, promptFile: "f.md" },
+      WORKFLOW_TOKENS.review,
+    )
+    assert.deepEqual(result.promptArgs, {})
+  })
+
+  it("preserves idleTimeoutSeconds and maxIterations when set", () => {
+    const result = validateStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md", idleTimeoutSeconds: 120, maxIterations: 5 },
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.equal(result.idleTimeoutSeconds, 120)
+    assert.equal(result.maxIterations, 5)
+  })
+
+  it("omits idleTimeoutSeconds and maxIterations when not set", () => {
+    const result = validateStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md" },
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.equal("idleTimeoutSeconds" in result, false)
+    assert.equal("maxIterations" in result, false)
+  })
+
+  it("throws when agent is missing", () => {
+    assert.throws(
+      () =>
+        validateStage(
+          "implement",
+          { agent: undefined as unknown as AgentProvider, promptFile: "f.md" },
+          WORKFLOW_TOKENS.implement,
+        ),
+      /stages\.implement\.agent is required/,
+    )
+  })
+
+  it("throws when promptFile is empty", () => {
+    assert.throws(
+      () => validateStage("review", { agent: fakeAgent, promptFile: "" }, WORKFLOW_TOKENS.review),
+      /stages\.review\.promptFile is required/,
+    )
+  })
+})
+
+describe("resolveContainerStage", () => {
+  it("falls back to global sandbox when per-stage sandbox is absent", () => {
+    const result = resolveContainerStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md" },
+      fakeSandbox,
+      undefined,
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.equal(result.sandbox, fakeSandbox)
+  })
+
+  it("per-stage sandbox wins over global", () => {
+    const stageSandbox = { name: "stage" } as unknown as SandboxProvider
+    const result = resolveContainerStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md", sandbox: stageSandbox },
+      fakeSandbox,
+      undefined,
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.equal(result.sandbox, stageSandbox)
+  })
+
+  it("per-stage hooks win over global hooks", () => {
+    const globalHooks = { sandbox: { onSandboxReady: [{ command: "g" }] } } as const
+    const stageHooks = { sandbox: { onSandboxReady: [{ command: "s" }] } } as const
+    const result = resolveContainerStage(
+      "merge",
+      { agent: fakeAgent, promptFile: "f.md", hooks: stageHooks },
+      fakeSandbox,
+      globalHooks,
+      WORKFLOW_TOKENS.merge,
+    )
+    assert.deepEqual(result.hooks, stageHooks)
+  })
+
+  it("omits hooks when neither per-stage nor global is provided", () => {
+    const result = resolveContainerStage(
+      "implement",
+      { agent: fakeAgent, promptFile: "f.md" },
+      fakeSandbox,
+      undefined,
+      WORKFLOW_TOKENS.implement,
+    )
+    assert.equal("hooks" in result, false)
   })
 })

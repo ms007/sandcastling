@@ -1,4 +1,5 @@
 export { MARKER_COMMENT_PREFIX } from "./actions.ts"
+export { actionIssueAndStage } from "./attempts.ts"
 export {
   DEFAULT_ATTEMPT_CAP,
   DEFAULT_TICK_CAP,

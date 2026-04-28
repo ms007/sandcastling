@@ -9,6 +9,7 @@ const { validateStage, resolveContainerStage } = configTesting
 
 const fakeAgent = { name: "fake-agent" } as unknown as AgentProvider
 const fakeSandbox = { name: "fake-sandbox" } as unknown as SandboxProvider
+const fakeSandboxFactory = () => fakeSandbox
 
 describe("issuePromptArgs", () => {
   it("returns the prompt-template fields with an empty PRIOR_ATTEMPTS by default", () => {
@@ -62,6 +63,8 @@ describe("buildMergerRunOptions", () => {
     sandbox: fakeSandbox,
   }
 
+  const runId = "01JTEST_RUNID"
+
   it("uses a named-branch strategy forked from baseRef.sha", () => {
     const opts = buildMergerRunOptions({
       issues,
@@ -69,6 +72,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.deepEqual(opts.branchStrategy, {
       type: "branch",
@@ -84,6 +88,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.BASE_LABEL, "main (abcdef1)")
   })
@@ -95,6 +100,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #1: feat: alpha\n- #2: fix: beta")
@@ -107,6 +113,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "")
   })
@@ -119,6 +126,7 @@ describe("buildMergerRunOptions", () => {
       priorAttempts: "attempt #2 failed",
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "attempt #2 failed")
   })
@@ -130,6 +138,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "")
@@ -142,6 +151,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-99")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #99: chore: cleanup")
@@ -154,6 +164,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.agent, fakeAgent)
     assert.equal(opts.sandbox, fakeSandbox)
@@ -166,6 +177,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptFile, "./.sandcastle/prompts/merge.md")
   })
@@ -178,6 +190,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.idleTimeoutSeconds, 300)
     assert.equal(opts.maxIterations, 3)
@@ -190,6 +203,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal("idleTimeoutSeconds" in opts, false)
     assert.equal("maxIterations" in opts, false)
@@ -203,6 +217,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config,
       logDir: undefined,
+      runId,
     })
     assert.equal(opts.promptArgs?.CUSTOM, "value")
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
@@ -215,6 +230,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config: mergeConfig,
       logDir: undefined,
+      runId,
     })
     assert.equal("hooks" in opts, false)
   })
@@ -228,17 +244,105 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       config,
       logDir: undefined,
+      runId,
     })
     assert.deepEqual(opts.hooks, hooks)
+  })
+
+  it("places stage log under <logDir>/<runId>/ when logDir is set", () => {
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/tmp/logs",
+      runId,
+    })
+    assert.deepEqual(opts.logging, {
+      type: "file",
+      path: "/tmp/logs/01JTEST_RUNID/merger.log",
+    })
+  })
+
+  it("falls back to stdout when logDir is undefined regardless of runId", () => {
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+      runId,
+    })
+    assert.deepEqual(opts.logging, { type: "stdout" })
+  })
+
+  it("merger filename contains no timestamps or run ids when waveIndex is absent", () => {
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/logs",
+      runId,
+    })
+    const logging = opts.logging as { type: "file"; path: string }
+    assert.equal(logging.type, "file")
+    assert.ok(
+      logging.path.endsWith("/merger.log"),
+      `expected path to end with /merger.log, got: ${logging.path}`,
+    )
+  })
+
+  it("includes wave index in merger filename when waveIndex is provided", () => {
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/logs",
+      runId,
+      waveIndex: 0,
+    })
+    assert.deepEqual(opts.logging, {
+      type: "file",
+      path: "/logs/01JTEST_RUNID/merger-wave-0.log",
+    })
+  })
+
+  it("different wave indices produce different log paths", () => {
+    const wave0 = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/logs",
+      runId,
+      waveIndex: 0,
+    })
+    const wave1 = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/logs",
+      runId,
+      waveIndex: 1,
+    })
+    const log0 = wave0.logging as { type: "file"; path: string }
+    const log1 = wave1.logging as { type: "file"; path: string }
+    assert.notEqual(log0.path, log1.path)
+    assert.equal(log0.path, "/logs/01JTEST_RUNID/merger-wave-0.log")
+    assert.equal(log1.path, "/logs/01JTEST_RUNID/merger-wave-1.log")
   })
 })
 
 describe("resolveConfig", () => {
   const defaults = { tickCap: 50, attemptCap: 3 }
+  const testRunId = "01JCONFIG_RUNID"
 
   const baseOptions = {
     seedIssue: 42,
-    sandbox: fakeSandbox,
+    sandbox: fakeSandboxFactory,
     stages: {
       implement: { agent: fakeAgent, promptFile: "implement.md" },
       review: { agent: fakeAgent, promptFile: "review.md" },
@@ -247,20 +351,34 @@ describe("resolveConfig", () => {
   }
 
   it("resolves a minimal valid config with defaults", () => {
-    const resolved = resolveConfig(baseOptions, defaults)
+    const resolved = resolveConfig(baseOptions, defaults, testRunId)
     assert.equal(resolved.seedIssue, 42)
+    assert.equal(resolved.runId, testRunId)
     assert.equal(resolved.tickCap, 50)
     assert.equal(resolved.attemptCap, 3)
     assert.equal(resolved.logDir, undefined)
   })
 
   it("throws when seedIssue is not a positive integer", () => {
-    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: 0 }, defaults), /seedIssue/)
-    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: -1 }, defaults), /seedIssue/)
-    assert.throws(() => resolveConfig({ ...baseOptions, seedIssue: 1.5 }, defaults), /seedIssue/)
+    assert.throws(
+      () => resolveConfig({ ...baseOptions, seedIssue: 0 }, defaults, testRunId),
+      /seedIssue/,
+    )
+    assert.throws(
+      () => resolveConfig({ ...baseOptions, seedIssue: -1 }, defaults, testRunId),
+      /seedIssue/,
+    )
+    assert.throws(
+      () => resolveConfig({ ...baseOptions, seedIssue: 1.5 }, defaults, testRunId),
+      /seedIssue/,
+    )
     assert.throws(
       () =>
-        resolveConfig({ ...baseOptions, seedIssue: Number.NaN } as typeof baseOptions, defaults),
+        resolveConfig(
+          { ...baseOptions, seedIssue: Number.NaN } as typeof baseOptions,
+          defaults,
+          testRunId,
+        ),
       /seedIssue/,
     )
     assert.throws(
@@ -268,6 +386,7 @@ describe("resolveConfig", () => {
         resolveConfig(
           { ...baseOptions, seedIssue: Number.POSITIVE_INFINITY } as typeof baseOptions,
           defaults,
+          testRunId,
         ),
       /seedIssue/,
     )
@@ -275,7 +394,11 @@ describe("resolveConfig", () => {
 
   it("uses orchestrator-level sandbox as fallback for container stages", () => {
     const globalSandbox = { name: "global" } as unknown as SandboxProvider
-    const resolved = resolveConfig({ ...baseOptions, sandbox: globalSandbox }, defaults)
+    const resolved = resolveConfig(
+      { ...baseOptions, sandbox: () => globalSandbox },
+      defaults,
+      testRunId,
+    )
     assert.equal(resolved.stages.implement.sandbox, globalSandbox)
     assert.equal(resolved.stages.merge.sandbox, globalSandbox)
   })
@@ -289,7 +412,7 @@ describe("resolveConfig", () => {
         implement: { ...baseOptions.stages.implement, sandbox: stageSandbox },
       },
     }
-    const resolved = resolveConfig(options, defaults)
+    const resolved = resolveConfig(options, defaults, testRunId)
     assert.equal(resolved.stages.implement.sandbox, stageSandbox)
     assert.equal(resolved.stages.merge.sandbox, fakeSandbox)
   })
@@ -305,20 +428,34 @@ describe("resolveConfig", () => {
         merge: { ...baseOptions.stages.merge, hooks: stageHooks },
       },
     }
-    const resolved = resolveConfig(options, defaults)
+    const resolved = resolveConfig(options, defaults, testRunId)
     assert.deepEqual(resolved.stages.implement.hooks, globalHooks)
     assert.deepEqual(resolved.stages.merge.hooks, stageHooks)
   })
 
   it("propagates user-provided tickCap and attemptCap", () => {
-    const resolved = resolveConfig({ ...baseOptions, tickCap: 10, attemptCap: 5 }, defaults)
+    const resolved = resolveConfig(
+      { ...baseOptions, tickCap: 10, attemptCap: 5 },
+      defaults,
+      testRunId,
+    )
     assert.equal(resolved.tickCap, 10)
     assert.equal(resolved.attemptCap, 5)
   })
 
   it("propagates user-provided logDir", () => {
-    const resolved = resolveConfig({ ...baseOptions, logDir: "/tmp/logs" }, defaults)
+    const resolved = resolveConfig({ ...baseOptions, logDir: "/tmp/logs" }, defaults, testRunId)
     assert.equal(resolved.logDir, "/tmp/logs")
+  })
+
+  it("calls the sandbox factory with the provided runId", () => {
+    const received: string[] = []
+    const spy = (runId: string) => {
+      received.push(runId)
+      return fakeSandbox
+    }
+    resolveConfig({ ...baseOptions, sandbox: spy }, defaults, "MY_RUN_ID")
+    assert.deepEqual(received, ["MY_RUN_ID"])
   })
 })
 

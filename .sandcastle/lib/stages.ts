@@ -26,15 +26,13 @@ const issuePromptArgs = (issue: IssueRef, priorAttempts = "") => ({
 
 const sanitizeForFilename = (s: string): string => s.replace(/[^A-Za-z0-9._-]+/g, "-")
 
-/**
- * Build the `logging` option for a sandcastle stage run. When `logDir` is
- * set, the agent log goes to `<logDir>/<filename>.log`; when undefined,
- * stages render to stdout so the upstream package's `.sandcastle/logs/`
- * default never fires.
- */
-const stageLogging = (logDir: string | undefined, filename: string): LoggingOption =>
+const stageLogging = (
+  logDir: string | undefined,
+  runId: string,
+  filename: string,
+): LoggingOption =>
   logDir !== undefined
-    ? { type: "file", path: join(logDir, `${sanitizeForFilename(filename)}.log`) }
+    ? { type: "file", path: join(logDir, runId, `${sanitizeForFilename(filename)}.log`) }
     : { type: "stdout" }
 
 export const runImplementer = async ({
@@ -44,6 +42,7 @@ export const runImplementer = async ({
   priorAttempts = "",
   config,
   logDir,
+  runId,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
@@ -51,6 +50,7 @@ export const runImplementer = async ({
   priorAttempts?: string
   config: ResolvedStageConfig
   logDir: string | undefined
+  runId: string
 }): Promise<void> => {
   const result = await sandbox.run({
     name: `Implementer #${issue.number}`,
@@ -63,7 +63,7 @@ export const runImplementer = async ({
       ...issuePromptArgs(issue, priorAttempts),
     },
     completionSignal: COMPLETION_SIGNALS.implement,
-    logging: stageLogging(logDir, `implementer-issue-${issue.number}`),
+    logging: stageLogging(logDir, runId, `implementer-issue-${issue.number}`),
   })
 
   const verdict = parseImplementerResult(result.stdout)
@@ -90,12 +90,14 @@ export const runReviewer = async ({
   priorAttempts = "",
   config,
   logDir,
+  runId,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
   priorAttempts?: string
   config: ResolvedStageConfig
   logDir: string | undefined
+  runId: string
 }): Promise<ReviewerVerdict> => {
   const result = await sandbox.run({
     name: `Reviewer #${issue.number}`,
@@ -108,7 +110,7 @@ export const runReviewer = async ({
       ...issuePromptArgs(issue, priorAttempts),
     },
     completionSignal: COMPLETION_SIGNALS.review,
-    logging: stageLogging(logDir, `reviewer-issue-${issue.number}`),
+    logging: stageLogging(logDir, runId, `reviewer-issue-${issue.number}`),
   })
 
   return parseReviewerVerdict(result.stdout)
@@ -121,7 +123,12 @@ interface MergerParams {
   readonly priorAttempts?: string
   readonly config: ResolvedContainerStageConfig
   readonly logDir: string | undefined
+  readonly runId: string
+  readonly waveIndex?: number
 }
+
+const mergerLogName = (waveIndex: number | undefined): string =>
+  waveIndex !== undefined ? `merger-wave-${waveIndex}` : "merger"
 
 const buildMergerRunOptions = ({
   issues,
@@ -130,6 +137,8 @@ const buildMergerRunOptions = ({
   priorAttempts = "",
   config,
   logDir,
+  runId,
+  waveIndex,
 }: MergerParams): RunOptions => ({
   sandbox: config.sandbox,
   ...spreadOptional("hooks", config.hooks),
@@ -147,7 +156,7 @@ const buildMergerRunOptions = ({
   },
   branchStrategy: { type: "branch", branch: mergeBranch, baseBranch: baseRef.sha },
   completionSignal: COMPLETION_SIGNALS.merge,
-  logging: stageLogging(logDir, `merger-${mergeBranch}`),
+  logging: stageLogging(logDir, runId, mergerLogName(waveIndex)),
 })
 
 export const runMerger = async (params: MergerParams): Promise<void> => {

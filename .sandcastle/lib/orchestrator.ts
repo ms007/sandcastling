@@ -3,6 +3,7 @@ import { appendFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import * as sandcastle from "@ai-hero/sandcastle"
+import { ulid } from "ulid"
 import {
   type OrchestratorOptions,
   type ResolvedConfig,
@@ -30,6 +31,7 @@ import {
   type WorkflowConfig,
   type WorkflowDeps,
   type WorkflowResult,
+  actionIssueAndStage,
   runWorkflow,
 } from "./manager/index.ts"
 import {
@@ -54,10 +56,14 @@ const execFileP = promisify(execFile)
 type TranscriptOption = { readonly kind: "file"; readonly dir: string } | { readonly kind: "off" }
 
 export async function runOrchestrator(options: OrchestratorOptions): Promise<WorkflowResult> {
-  const resolved = resolveConfig(options, {
-    tickCap: DEFAULT_TICK_CAP,
-    attemptCap: DEFAULT_ATTEMPT_CAP,
-  })
+  const runId = ulid()
+  console.log(`Run: ${runId}`)
+
+  const resolved = resolveConfig(
+    options,
+    { tickCap: DEFAULT_TICK_CAP, attemptCap: DEFAULT_ATTEMPT_CAP },
+    runId,
+  )
 
   const repoP = detectRepo()
   const baseRef = captureBaseRef()
@@ -75,7 +81,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
 
   const transcriptOption: TranscriptOption =
     resolved.logDir !== undefined ? { kind: "file", dir: resolved.logDir } : { kind: "off" }
-  const sink = await openTranscriptSink(resolved.seedIssue, owner, repo, transcriptOption)
+  const sink = await openTranscriptSink(resolved.seedIssue, runId, owner, repo, transcriptOption)
   if (sink.path) console.log(`Transcript: ${sink.path}`)
 
   const sandboxes = createSandboxCache(resolved)
@@ -87,12 +93,16 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
   }
 
   let result: WorkflowResult | null = null
+  let error: Error | undefined
   try {
     result = await runWorkflow(config, deps)
     console.log(`\nWorkflow result: ${JSON.stringify(result)}`)
     return result
+  } catch (err) {
+    error = err instanceof Error ? err : new Error(String(err))
+    throw err
   } finally {
-    await Promise.allSettled([sandboxes.disposeAll(), sink.close(result)])
+    await Promise.allSettled([sandboxes.disposeAll(), sink.close(result, error)])
   }
 }
 
@@ -262,7 +272,7 @@ function buildActionDeps(
   sandboxes: SandboxCache,
 ): ActionDeps {
   const { implement, review, merge } = resolved.stages
-  const { logDir } = resolved
+  const { logDir, runId } = resolved
   let mergerBaseRef = baseRef
   let waveIndex = 0
 
@@ -281,6 +291,7 @@ function buildActionDeps(
         priorAttempts,
         config: implement,
         logDir,
+        runId,
       })
     },
     runReviewer: async (issue, priorAttempts) => {
@@ -291,6 +302,7 @@ function buildActionDeps(
         priorAttempts,
         config: review,
         logDir,
+        runId,
       })
       if (verdict.tag === "approved") await sandboxes.release(issue.number)
       return verdict
@@ -306,6 +318,8 @@ function buildActionDeps(
         priorAttempts,
         config: merge,
         logDir,
+        runId,
+        waveIndex: currentWave,
       })
       mergerBaseRef = commitWaveMergerResult(currentBaseRef, mergeBranch, currentWave, console.log)
       waveIndex++
@@ -321,11 +335,12 @@ function buildActionDeps(
 interface TranscriptSink {
   readonly onTick: (event: TickEvent) => void
   readonly path?: string
-  close(result: WorkflowResult | null): Promise<void>
+  close(result: WorkflowResult | null, error?: Error): Promise<void>
 }
 
 async function openTranscriptSink(
   seedNumber: number,
+  runId: string,
   owner: string,
   repo: string,
   option: TranscriptOption,
@@ -334,22 +349,39 @@ async function openTranscriptSink(
     return { onTick: () => {}, close: async () => {} }
   }
   const { dir } = option
-  await mkdir(dir, { recursive: true })
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
-  const path = join(dir, `workflow-seed-${seedNumber}-${stamp}.log`)
-  await appendFile(path, `[start] seed=${seedNumber} owner=${owner} repo=${repo}\n`)
+  const runDir = join(dir, runId)
+  await mkdir(runDir, { recursive: true })
+  const path = join(runDir, "workflow.log")
+  await appendFile(path, `[start] seed=${seedNumber} runId=${runId} owner=${owner} repo=${repo}\n`)
 
   let writeChain: Promise<void> = Promise.resolve()
   const append = (line: string) => {
     writeChain = writeChain.then(() => appendFile(path, line)).catch(() => {})
   }
+
+  let lastTarget: ReturnType<typeof actionIssueAndStage> = null
+
   return {
     path,
     onTick: (event) => {
+      if (event.decision.tag === "act") {
+        lastTarget = actionIssueAndStage(event.decision.action)
+      }
       append(`[tick ${event.tickCount}] ${JSON.stringify(summarizeTickEvent(event))}\n`)
     },
-    close: async (result) => {
-      append(result ? `\n[result] ${JSON.stringify(result)}\n` : "\n[aborted]\n")
+    close: async (result, error) => {
+      if (error) {
+        const issue = lastTarget?.issue.number ?? null
+        const stage = lastTarget?.stage ?? null
+        const stack = error.stack ?? error.message
+        append(
+          `\n[crashed] runId=${runId} issue=${issue} stage=${stage}\n${error.message}\n${stack}\n`,
+        )
+      } else if (result) {
+        append(`\n[result] runId=${runId} ${JSON.stringify(result)}\n`)
+      } else {
+        append("\n[aborted]\n")
+      }
       await writeChain
     },
   }
@@ -397,3 +429,6 @@ function summarizeDecision(decision: TickEvent["decision"]): unknown {
       return { tag: "act", action: action.tag, issue: action.issue.number, ...waveInfo }
   }
 }
+
+/** Test seam — internal helpers exposed for unit tests. Not a public API. */
+export const __testing = { openTranscriptSink }

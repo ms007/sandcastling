@@ -13,9 +13,11 @@ export interface ContainerStageConfig extends StageConfig {
   readonly hooks?: SandboxHooks
 }
 
+export type SandboxFactory = (runId: string) => SandboxProvider
+
 export interface OrchestratorOptions {
   readonly seedIssue: number
-  readonly sandbox: SandboxProvider
+  readonly sandbox: SandboxFactory
   readonly hooks?: SandboxHooks
   readonly stages: {
     readonly implement: ContainerStageConfig
@@ -24,13 +26,6 @@ export interface OrchestratorOptions {
   }
   readonly tickCap?: number
   readonly attemptCap?: number
-  /**
-   * Directory to write file logs into. When set, the orchestrator transcript
-   * (`workflow-seed-<n>-<ts>.log`) and per-stage agent logs are written here.
-   * When omitted, both are suppressed (stages render to stdout, transcript
-   * is off). The library never invents a default — pass an explicit path
-   * from the caller (e.g. `".sandcastle/logs"`).
-   */
   readonly logDir?: string
 }
 
@@ -49,6 +44,7 @@ export interface ResolvedContainerStageConfig extends ResolvedStageConfig {
 
 export interface ResolvedConfig {
   readonly seedIssue: number
+  readonly runId: string
   readonly stages: {
     readonly implement: ResolvedContainerStageConfig
     readonly review: ResolvedStageConfig
@@ -129,12 +125,13 @@ export function resolveConfig(
     tickCap: number
     attemptCap: number
   },
+  runId: string,
 ): ResolvedConfig {
   if (!Number.isInteger(options.seedIssue) || options.seedIssue <= 0) {
     throw new Error("seedIssue must be a positive integer")
   }
 
-  const globalSandbox = options.sandbox
+  const globalSandbox = options.sandbox(runId)
   const globalHooks = options.hooks
 
   const implement = resolveContainerStage(
@@ -155,6 +152,7 @@ export function resolveConfig(
 
   return {
     seedIssue: options.seedIssue,
+    runId,
     stages: { implement, review, merge },
     tickCap: options.tickCap ?? defaults.tickCap,
     attemptCap: options.attemptCap ?? defaults.attemptCap,

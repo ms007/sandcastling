@@ -41,6 +41,12 @@ export interface DockerOptions {
    * container removal — wipe them via `removeVolumes` when needed.
    */
   readonly volumes?: readonly VolumeMount[]
+  /**
+   * When set, container names become `<namePrefix>-<short-random>` instead
+   * of the default `sandcastle-<uuid>`. Useful for tagging containers with
+   * a run identifier so `docker ps` output is immediately traceable.
+   */
+  readonly namePrefix?: string
 }
 
 /**
@@ -56,13 +62,22 @@ export function docker(options: DockerOptions): BindMountSandboxProvider {
   })
 }
 
+// ---------- Container naming ------------------------------------------------
+
+function buildContainerName(namePrefix: string | undefined): string {
+  if (namePrefix) {
+    return `${namePrefix}-${randomUUID().slice(0, 8)}`
+  }
+  return `sandcastle-${randomUUID()}`
+}
+
 // ---------- Sandbox creation -----------------------------------------------
 
 async function createDockerSandbox(
   createOptions: BindMountCreateOptions,
-  { imageName, volumes = [] }: DockerOptions,
+  { imageName, volumes = [], namePrefix }: DockerOptions,
 ): Promise<BindMountSandboxHandle> {
-  const containerName = `sandcastle-${randomUUID()}`
+  const containerName = buildContainerName(namePrefix)
   const worktreePath = resolveWorktreePath(createOptions)
   const uid = process.getuid?.() ?? 1000
   const gid = process.getgid?.() ?? 1000
@@ -237,6 +252,7 @@ function volumeFlags(volumes: readonly VolumeMount[]): string[] {
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */
 export const __testing = {
+  buildContainerName,
   envFlags,
   bindMountFlags,
   volumeFlags,

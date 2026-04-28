@@ -22,7 +22,8 @@
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
-    "chalk": "^5.3.0"
+    "chalk": "^5.3.0",
+    "ulid": "^3.0.2"
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "latest",

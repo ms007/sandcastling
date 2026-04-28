@@ -32,6 +32,7 @@ export {
 } from "./project.ts"
 export {
   type OrchestratorOptions,
+  type SandboxFactory,
   type StageConfig,
   type ContainerStageConfig,
   type ResolvedConfig,

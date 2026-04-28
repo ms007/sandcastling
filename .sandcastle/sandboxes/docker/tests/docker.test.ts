@@ -3,12 +3,30 @@ import { describe, it } from "node:test"
 import type { BindMountCreateOptions } from "@ai-hero/sandcastle"
 import { __testing } from "../docker.ts"
 
-const { envFlags, bindMountFlags, volumeFlags, resolveWorktreePath } = __testing
+const { buildContainerName, envFlags, bindMountFlags, volumeFlags, resolveWorktreePath } = __testing
 
 const asCreateOptions = (
   worktreePath: string,
   mounts: { hostPath: string; sandboxPath: string; readonly: boolean }[],
 ): BindMountCreateOptions => ({ worktreePath, mounts }) as unknown as BindMountCreateOptions
+
+describe("buildContainerName", () => {
+  it("uses the namePrefix followed by an 8-char suffix when prefix is set", () => {
+    const name = buildContainerName("01JTRZ5X0G")
+    assert.match(name, /^01JTRZ5X0G-[0-9a-f]{8}$/)
+  })
+
+  it("falls back to sandcastle-<uuid> when no prefix is provided", () => {
+    const name = buildContainerName(undefined)
+    assert.match(name, /^sandcastle-[0-9a-f-]{36}$/)
+  })
+
+  it("produces unique names across calls with the same prefix", () => {
+    const a = buildContainerName("run123")
+    const b = buildContainerName("run123")
+    assert.notEqual(a, b)
+  })
+})
 
 describe("envFlags", () => {
   it("emits a -e KEY=VALUE pair for each entry", () => {

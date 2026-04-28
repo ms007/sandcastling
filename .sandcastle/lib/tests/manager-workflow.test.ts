@@ -1036,6 +1036,32 @@ describe("runWorkflow — rework loop", () => {
   })
 })
 
+describe("runWorkflow — throwing action propagates", () => {
+  it("an error thrown by an action dep propagates out of runWorkflow", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps, log } = fakeActionDeps()
+    deps.runImplementer = async () => {
+      throw new Error("sandbox crashed unexpectedly")
+    }
+
+    await assert.rejects(
+      () => runWorkflow(config, { observe: noopObserveDeps, actions: deps }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.equal(err.message, "sandbox crashed unexpectedly")
+        return true
+      },
+    )
+
+    assert.deepEqual(log, ["moveStatus(item-1, In Progress)"])
+  })
+})
+
 describe("runWorkflow — implementer cross-branch dependency failure", () => {
   it("surfaces CROSS_BRANCH_DEPENDENCY failure from implementer through the workflow", async () => {
     const config: WorkflowConfig = {

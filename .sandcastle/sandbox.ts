@@ -4,15 +4,18 @@
  * the install hook that warms `node_modules/` after sandbox boot.
  */
 import type { SandboxHooks } from "@ai-hero/sandcastle"
+import type { SandboxFactory } from "./lib/config.ts"
 import { docker, workspaceVolumes } from "./sandboxes/docker/index.ts"
 
-export const sandbox = docker({
-  imageName: "sandcastle:latest",
-  volumes: workspaceVolumes({
-    nodeModules: "sandcastle-node-modules",
-    pnpmStore: "sandcastle-pnpm-store",
-  }),
-})
+export const sandbox: SandboxFactory = (runId) =>
+  docker({
+    imageName: "sandcastle:latest",
+    namePrefix: runId,
+    volumes: workspaceVolumes({
+      nodeModules: "sandcastle-node-modules",
+      pnpmStore: "sandcastle-pnpm-store",
+    }),
+  })
 
 export const sandboxHooks: SandboxHooks = {
   sandbox: {

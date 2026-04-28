@@ -150,8 +150,8 @@ The host project itself is intentionally minimal: TypeScript + Biome,
   is tracked upstream in
   [mattpocock/sandcastle#191](https://github.com/mattpocock/sandcastle/issues/191).
 - The sandbox runs as UID 1000 (`agent`); the custom provider in
-  `.sandcastle/lib/` exists to keep file ownership sane on bind mounts —
-  see the design notes in `lib/docker.ts` and `lib/chown.ts` before
+  `.sandcastle/sandboxes/docker/` exists to keep file ownership sane on
+  bind mounts — see the design notes in `docker.ts` and `chown.ts` before
   changing it.
 - One concurrent sandbox container per issue. Cross-issue parallelism is
   bounded by `tickCap` and the manager, not by Docker.

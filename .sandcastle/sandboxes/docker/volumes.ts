@@ -8,7 +8,7 @@
  * package-manager stores.
  */
 
-import { WORKSPACE_PATH, spawnDocker } from "./internal.ts"
+import { WORKSPACE_PATH, spawnDocker } from "./process.ts"
 
 /** A single named docker volume mounted at a fixed path inside the sandbox. */
 export interface VolumeMount {

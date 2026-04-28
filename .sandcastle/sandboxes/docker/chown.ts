@@ -22,7 +22,7 @@
  *     user. On warm reuse this is a no-op.
  */
 
-import { SANDBOX_HOME, WORKSPACE_PATH } from "./internal.ts"
+import { SANDBOX_HOME, WORKSPACE_PATH } from "./process.ts"
 
 // `find ! -name <basename>` needs a basename, not an absolute path.
 const WORKSPACE_BASENAME = WORKSPACE_PATH.slice(SANDBOX_HOME.length + 1)

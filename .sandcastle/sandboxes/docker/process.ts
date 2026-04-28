@@ -1,5 +1,7 @@
 /**
- * Internal helpers shared by the rest of the lib:
+ * Docker process runner with stream/stdin contract and signal-based
+ * cleanup registry.
+ *
  *   1. Path constants used by every other module (single source of truth).
  *   2. A spawn-based wrapper around `docker` invocations that honors
  *      Sandcastle's streaming contract (per-line stdout via `onLine`) and

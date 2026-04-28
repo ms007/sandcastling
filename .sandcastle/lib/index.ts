@@ -8,19 +8,12 @@ export {
   issueBranchName,
   readBranchInfo,
 } from "./git.ts"
-export { docker, type DockerOptions } from "./docker.ts"
 export {
   runImplementer,
   runMerger,
   runReviewer,
 } from "./stages.ts"
 export type { IssueRef } from "./types.ts"
-export {
-  removeVolumes,
-  workspaceVolumes,
-  type VolumeMount,
-  type WorkspaceVolumeNames,
-} from "./volumes.ts"
 export { wrapAgentProvider } from "./agent.ts"
 export {
   type BranchLookup,

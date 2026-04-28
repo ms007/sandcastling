@@ -18,7 +18,7 @@
     "format:check": "biome format .",
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "test": "node --import tsx --test .sandcastle/lib/tests/*.test.ts",
+    "test": "node --import tsx --test .sandcastle/lib/tests/*.test.ts .sandcastle/sandboxes/*/tests/*.test.ts",
     "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {

@@ -13,9 +13,10 @@ the sandbox run, not the host code.
   and the sibling adapter files.
 - Entrypoint knobs (model, caps, transcript) → `.sandcastle/main.ts` only.
 
-Sandbox plumbing — `.sandcastle/lib/docker.ts`, `.sandcastle/lib/chown.ts`,
-`.sandcastle/Dockerfile`, and the volume names in `package.json` — is
-coupled. Read the comments in `docker.ts` and `chown.ts` before editing.
+Sandbox plumbing — `.sandcastle/sandboxes/docker/docker.ts`,
+`.sandcastle/sandboxes/docker/chown.ts`, `.sandcastle/Dockerfile`, and the
+volume names in `package.json` — is coupled. Read the comments in
+`docker.ts` and `chown.ts` before editing.
 
 ## Verify
 

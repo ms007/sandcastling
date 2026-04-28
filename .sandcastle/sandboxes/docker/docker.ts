@@ -27,7 +27,7 @@ import {
   registerForCleanup,
   runDocker,
   spawnDocker,
-} from "./internal.ts"
+} from "./process.ts"
 import type { VolumeMount } from "./volumes.ts"
 
 /** Configuration for the {@link docker} provider. */

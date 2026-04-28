@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert"
 import { describe, it } from "node:test"
-import { DockerCommandError, assertOk, registerForCleanup } from "../internal.ts"
+import { DockerCommandError, assertOk, registerForCleanup } from "../process.ts"
 
 describe("DockerCommandError", () => {
   it("prefixes the operation and exposes the original error as cause", () => {

@@ -12,6 +12,7 @@ const result = await runOrchestrator({
   seedIssue,
   sandbox,
   hooks: sandboxHooks,
+  logDir: ".sandcastle/logs",
   stages: {
     implement: {
       agent: claudeCustom("claude-opus-4-6"),

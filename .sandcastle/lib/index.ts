@@ -39,4 +39,4 @@ export {
   type ResolvedContainerStageConfig,
   resolveConfig,
 } from "./config.ts"
-export { runOrchestrator, type TranscriptOption } from "./orchestrator.ts"
+export { runOrchestrator } from "./orchestrator.ts"

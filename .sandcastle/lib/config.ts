@@ -1,5 +1,4 @@
 import type { AgentProvider, PromptArgs, SandboxHooks, SandboxProvider } from "@ai-hero/sandcastle"
-import type { TranscriptOption } from "./orchestrator.ts"
 
 export interface StageConfig {
   readonly agent: AgentProvider
@@ -25,7 +24,14 @@ export interface OrchestratorOptions {
   }
   readonly tickCap?: number
   readonly attemptCap?: number
-  readonly transcript?: TranscriptOption
+  /**
+   * Directory to write file logs into. When set, the orchestrator transcript
+   * (`workflow-seed-<n>-<ts>.log`) and per-stage agent logs are written here.
+   * When omitted, both are suppressed (stages render to stdout, transcript
+   * is off). The library never invents a default — pass an explicit path
+   * from the caller (e.g. `".sandcastle/logs"`).
+   */
+  readonly logDir?: string
 }
 
 export interface ResolvedStageConfig {
@@ -50,7 +56,7 @@ export interface ResolvedConfig {
   }
   readonly tickCap: number
   readonly attemptCap: number
-  readonly transcript: TranscriptOption
+  readonly logDir: string | undefined
 }
 
 const IMPLEMENT_WORKFLOW_TOKENS = [
@@ -152,7 +158,7 @@ export function resolveConfig(
     stages: { implement, review, merge },
     tickCap: options.tickCap ?? defaults.tickCap,
     attemptCap: options.attemptCap ?? defaults.attemptCap,
-    transcript: options.transcript ?? { kind: "file" },
+    logDir: options.logDir,
   }
 }
 

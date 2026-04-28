@@ -63,7 +63,13 @@ describe("buildMergerRunOptions", () => {
   }
 
   it("uses a named-branch strategy forked from baseRef.sha", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.deepEqual(opts.branchStrategy, {
       type: "branch",
       branch: mergeBranch,
@@ -72,18 +78,36 @@ describe("buildMergerRunOptions", () => {
   })
 
   it("populates BASE_LABEL from the formatted baseRef", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal(opts.promptArgs?.BASE_LABEL, "main (abcdef1)")
   })
 
   it("includes BRANCH_LIST and ISSUE_LIST in promptArgs", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #1: feat: alpha\n- #2: fix: beta")
   })
 
   it("defaults PRIOR_ATTEMPTS to empty string", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "")
   })
 
@@ -94,6 +118,7 @@ describe("buildMergerRunOptions", () => {
       mergeBranch,
       priorAttempts: "attempt #2 failed",
       config: mergeConfig,
+      logDir: undefined,
     })
     assert.equal(opts.promptArgs?.PRIOR_ATTEMPTS, "attempt #2 failed")
   })
@@ -104,6 +129,7 @@ describe("buildMergerRunOptions", () => {
       baseRef,
       mergeBranch,
       config: mergeConfig,
+      logDir: undefined,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "")
@@ -115,51 +141,94 @@ describe("buildMergerRunOptions", () => {
       baseRef,
       mergeBranch,
       config: mergeConfig,
+      logDir: undefined,
     })
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-99")
     assert.equal(opts.promptArgs?.ISSUE_LIST, "- #99: chore: cleanup")
   })
 
   it("passes config.agent and config.sandbox into RunOptions", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal(opts.agent, fakeAgent)
     assert.equal(opts.sandbox, fakeSandbox)
   })
 
   it("passes config.promptFile into RunOptions", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal(opts.promptFile, "./.sandcastle/prompts/merge.md")
   })
 
   it("passes idleTimeoutSeconds and maxIterations when set", () => {
     const config = { ...mergeConfig, idleTimeoutSeconds: 300, maxIterations: 3 }
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config,
+      logDir: undefined,
+    })
     assert.equal(opts.idleTimeoutSeconds, 300)
     assert.equal(opts.maxIterations, 3)
   })
 
   it("omits idleTimeoutSeconds and maxIterations when not set", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal("idleTimeoutSeconds" in opts, false)
     assert.equal("maxIterations" in opts, false)
   })
 
   it("preserves user promptArgs alongside workflow-owned tokens", () => {
     const config = { ...mergeConfig, promptArgs: { CUSTOM: "value" } }
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config,
+      logDir: undefined,
+    })
     assert.equal(opts.promptArgs?.CUSTOM, "value")
     assert.equal(opts.promptArgs?.BRANCH_LIST, "- sandcastle/issue-1\n- sandcastle/issue-2")
   })
 
   it("omits hooks from RunOptions when config.hooks is absent", () => {
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config: mergeConfig })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: undefined,
+    })
     assert.equal("hooks" in opts, false)
   })
 
   it("passes hooks when config.hooks is present", () => {
     const hooks = { sandbox: { onSandboxReady: [{ command: "echo hi" }] } } as const
     const config = { ...mergeConfig, hooks }
-    const opts = buildMergerRunOptions({ issues, baseRef, mergeBranch, config })
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config,
+      logDir: undefined,
+    })
     assert.deepEqual(opts.hooks, hooks)
   })
 })
@@ -182,7 +251,7 @@ describe("resolveConfig", () => {
     assert.equal(resolved.seedIssue, 42)
     assert.equal(resolved.tickCap, 50)
     assert.equal(resolved.attemptCap, 3)
-    assert.deepEqual(resolved.transcript, { kind: "file" })
+    assert.equal(resolved.logDir, undefined)
   })
 
   it("throws when seedIssue is not a positive integer", () => {
@@ -247,9 +316,9 @@ describe("resolveConfig", () => {
     assert.equal(resolved.attemptCap, 5)
   })
 
-  it("propagates user-provided transcript option", () => {
-    const resolved = resolveConfig({ ...baseOptions, transcript: { kind: "off" } }, defaults)
-    assert.deepEqual(resolved.transcript, { kind: "off" })
+  it("propagates user-provided logDir", () => {
+    const resolved = resolveConfig({ ...baseOptions, logDir: "/tmp/logs" }, defaults)
+    assert.equal(resolved.logDir, "/tmp/logs")
   })
 })
 

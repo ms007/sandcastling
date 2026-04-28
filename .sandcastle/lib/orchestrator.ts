@@ -46,10 +46,12 @@ import { runImplementer, runMerger, runReviewer } from "./stages.ts"
 
 const execFileP = promisify(execFile)
 
-export type TranscriptOption =
-  | { readonly kind: "file"; readonly dir?: string }
-  | { readonly kind: "hook"; readonly onTick: (event: TickEvent) => void }
-  | { readonly kind: "off" }
+/**
+ * Internal sink for the workflow tick transcript. Public callers control
+ * this via `OrchestratorOptions.logDir`; this discriminated union is an
+ * implementation detail and is **not** exported from the package.
+ */
+type TranscriptOption = { readonly kind: "file"; readonly dir: string } | { readonly kind: "off" }
 
 export async function runOrchestrator(options: OrchestratorOptions): Promise<WorkflowResult> {
   const resolved = resolveConfig(options, {
@@ -71,7 +73,9 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
     `Seed #${config.seed.number} ${config.seed.isPrd ? "(PRD)" : ""} with ${config.children.length} child issue(s).`,
   )
 
-  const sink = await openTranscriptSink(resolved.seedIssue, owner, repo, resolved.transcript)
+  const transcriptOption: TranscriptOption =
+    resolved.logDir !== undefined ? { kind: "file", dir: resolved.logDir } : { kind: "off" }
+  const sink = await openTranscriptSink(resolved.seedIssue, owner, repo, transcriptOption)
   if (sink.path) console.log(`Transcript: ${sink.path}`)
 
   const sandboxes = createSandboxCache(resolved)
@@ -258,6 +262,7 @@ function buildActionDeps(
   sandboxes: SandboxCache,
 ): ActionDeps {
   const { implement, review, merge } = resolved.stages
+  const { logDir } = resolved
   let mergerBaseRef = baseRef
   let waveIndex = 0
 
@@ -275,6 +280,7 @@ function buildActionDeps(
         baseRef,
         priorAttempts,
         config: implement,
+        logDir,
       })
     },
     runReviewer: async (issue, priorAttempts) => {
@@ -284,6 +290,7 @@ function buildActionDeps(
         issue,
         priorAttempts,
         config: review,
+        logDir,
       })
       if (verdict.tag === "approved") await sandboxes.release(issue.number)
       return verdict
@@ -298,6 +305,7 @@ function buildActionDeps(
         mergeBranch,
         priorAttempts,
         config: merge,
+        logDir,
       })
       mergerBaseRef = commitWaveMergerResult(currentBaseRef, mergeBranch, currentWave, console.log)
       waveIndex++
@@ -325,10 +333,7 @@ async function openTranscriptSink(
   if (option.kind === "off") {
     return { onTick: () => {}, close: async () => {} }
   }
-  if (option.kind === "hook") {
-    return { onTick: option.onTick, close: async () => {} }
-  }
-  const dir = option.dir ?? join(".sandcastle", "logs")
+  const { dir } = option
   await mkdir(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, "-")
   const path = join(dir, `workflow-seed-${seedNumber}-${stamp}.log`)

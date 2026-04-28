@@ -10,7 +10,7 @@ import {
   resolveConfig,
   spreadOptional,
 } from "./config.ts"
-import { type BaseRef, captureBaseRef, countCommitsAhead } from "./git.ts"
+import { type BaseRef, captureBaseRef, countCommitsAhead, ensureCleanWorktree } from "./git.ts"
 import {
   casFastForward,
   listWorktreesForBranch,
@@ -56,6 +56,8 @@ const execFileP = promisify(execFile)
 type TranscriptOption = { readonly kind: "file"; readonly dir: string } | { readonly kind: "off" }
 
 export async function runOrchestrator(options: OrchestratorOptions): Promise<WorkflowResult> {
+  ensureCleanWorktree()
+
   const runId = ulid()
   console.log(`Run: ${runId}`)
 
@@ -97,6 +99,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
   try {
     result = await runWorkflow(config, deps)
     console.log(`\nWorkflow result: ${JSON.stringify(result)}`)
+    refreshHostWorktree(baseRef, result, console.log)
     return result
   } catch (err) {
     error = err instanceof Error ? err : new Error(String(err))
@@ -428,6 +431,41 @@ function summarizeDecision(decision: TickEvent["decision"]): unknown {
     default:
       return { tag: "act", action: action.tag, issue: action.issue.number, ...waveInfo }
   }
+}
+
+export function refreshHostWorktree(
+  baseRef: BaseRef,
+  result: WorkflowResult,
+  log: (msg: string) => void,
+): void {
+  if (result.tag !== "done") {
+    log("Worktree refresh skipped: workflow not done (result was blocked).")
+    return
+  }
+  if (baseRef.refName === "HEAD") {
+    log("Worktree refresh skipped: detached HEAD at run start.")
+    return
+  }
+  const tip = resolveRef(baseRef.refName)
+  if (tip.kind === "missing" || tip.sha === baseRef.sha) {
+    log(`Worktree refresh skipped: ${baseRef.refName} did not move.`)
+    return
+  }
+  const currentBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    encoding: "utf8",
+  }).trim()
+  if (currentBranch !== baseRef.refName) {
+    log(`Worktree refresh skipped: host HEAD switched from ${baseRef.refName} to ${currentBranch}.`)
+    return
+  }
+  try {
+    ensureCleanWorktree()
+  } catch {
+    log("Worktree refresh skipped: worktree is dirty.")
+    return
+  }
+  execFileSync("git", ["reset", "--hard", `refs/heads/${baseRef.refName}`])
+  log(`Refreshed host worktree to ${baseRef.refName} (${shortSha(tip.sha)}).`)
 }
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */

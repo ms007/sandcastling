@@ -6,7 +6,7 @@
  */
 import { strict as assert } from "node:assert"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, before, describe, it } from "node:test"
@@ -14,6 +14,7 @@ import {
   captureBaseRef,
   casFastForward,
   countCommitsAhead,
+  ensureCleanWorktree,
   formatBaseRef,
   issueBranchName,
   listWorktreesForBranch,
@@ -373,5 +374,103 @@ describe("git helpers (real subprocess)", () => {
         git("checkout", "-q", "main")
       }
     })
+  })
+})
+
+describe("ensureCleanWorktree", () => {
+  let repo: string
+  let originalCwd: string
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim()
+  const writeFile = (name: string, content: string) => writeFileSync(join(repo, name), content)
+
+  before(() => {
+    originalCwd = process.cwd()
+    repo = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-dirty-test-")))
+    process.chdir(repo)
+    git("init", "-b", "main", "-q")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    writeFile("tracked.txt", "initial\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "initial")
+  })
+
+  after(() => {
+    process.chdir(originalCwd)
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  it("returns silently on a clean repo", () => {
+    assert.doesNotThrow(() => ensureCleanWorktree())
+  })
+
+  it("does not throw when only untracked files exist", () => {
+    writeFile("scratch.txt", "untracked\n")
+    try {
+      assert.doesNotThrow(() => ensureCleanWorktree())
+    } finally {
+      unlinkSync(join(repo, "scratch.txt"))
+    }
+  })
+
+  it("throws on modified-tracked-but-unstaged changes", () => {
+    writeFile("tracked.txt", "modified\n")
+    try {
+      assert.throws(
+        () => ensureCleanWorktree(),
+        (err: Error) => {
+          assert.match(err.message, /unstaged/)
+          assert.doesNotMatch(err.message, /staged and unstaged/)
+          return true
+        },
+      )
+    } finally {
+      git("checkout", "--", "tracked.txt")
+    }
+  })
+
+  it("throws on staged changes", () => {
+    writeFile("tracked.txt", "staged-edit\n")
+    git("add", "tracked.txt")
+    try {
+      assert.throws(
+        () => ensureCleanWorktree(),
+        (err: Error) => {
+          assert.match(err.message, /staged/)
+          assert.doesNotMatch(err.message, /unstaged/)
+          return true
+        },
+      )
+    } finally {
+      git("reset", "--", "tracked.txt")
+      git("checkout", "--", "tracked.txt")
+    }
+  })
+
+  it("throws naming both when staged and unstaged changes coexist", () => {
+    writeFile("tracked.txt", "staged-edit\n")
+    git("add", "tracked.txt")
+    writeFile("tracked.txt", "then-more-unstaged\n")
+    try {
+      assert.throws(
+        () => ensureCleanWorktree(),
+        (err: Error) => {
+          assert.match(err.message, /staged and unstaged/)
+          return true
+        },
+      )
+    } finally {
+      git("reset", "--", "tracked.txt")
+      git("checkout", "--", "tracked.txt")
+    }
+  })
+
+  it("works on detached HEAD with a clean tree", () => {
+    git("checkout", "--detach", "HEAD")
+    try {
+      assert.doesNotThrow(() => ensureCleanWorktree())
+    } finally {
+      git("checkout", "-q", "main")
+    }
   })
 })

@@ -181,6 +181,18 @@ export const safeDeleteBranch = (branch: string, opts: { force?: boolean } = {})
   return true
 }
 
+export const ensureCleanWorktree = (): void => {
+  const hasUnstaged = tryGit("diff", "--quiet") === null
+  const hasStaged = tryGit("diff", "--cached", "--quiet") === null
+
+  if (!hasUnstaged && !hasStaged) return
+
+  const kind = hasStaged && hasUnstaged ? "staged and unstaged" : hasStaged ? "staged" : "unstaged"
+  throw new Error(
+    `Dirty working tree: ${kind} tracked changes detected. The orchestrator advances refs at a low level and would leave the worktree in a confusing state. Stash, commit, or discard your changes, then re-run.`,
+  )
+}
+
 /**
  * List worktree checkout paths that have `branch` checked out.
  * Returns an array of absolute paths (usually 0 or 1 element).

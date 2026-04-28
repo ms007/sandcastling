@@ -94,6 +94,8 @@ A per-run transcript lands in `.sandcastle/logs/`.
 ```
 .sandcastle/
 ├── main.ts                  # entrypoint: pnpm sandcastle <issue>
+├── agent.ts                 # claudeCustom() — pluggable per-stage agent
+├── sandbox.ts               # default Docker sandbox + lifecycle hooks
 ├── Dockerfile               # sandbox image (node 22 + git + Claude Code CLI + pnpm)
 ├── prompts/
 │   ├── system.md            # base system prompt for every stage
@@ -101,12 +103,25 @@ A per-run transcript lands in `.sandcastle/logs/`.
 │   ├── review.md            # reviewer task prompt
 │   └── merge.md             # merger task prompt
 ├── lib/
+│   ├── index.ts             # runOrchestrator() public entry
 │   ├── orchestrator.ts      # wires gh / git / sandbox / Project board
 │   ├── manager/             # pure observe-decide-act workflow loop
-│   ├── agent.ts stages.ts   # implement / review / merge stage runners
-│   ├── docker.ts chown.ts   # custom bind-mount provider (UID 1000 sandbox)
-│   ├── git.ts project.ts    # CAS fast-forward, related-issue lookup
-│   └── volumes.ts           # warm pnpm-store / node_modules volumes
+│   │   ├── workflow.ts      # tick driver
+│   │   ├── observation.ts decision.ts actions.ts
+│   │   └── attempts.ts result.ts types.ts
+│   ├── stages.ts            # implement / review / merge stage runners
+│   ├── agent.ts             # stage agent contract
+│   ├── git.ts               # CAS fast-forward, worktree helpers
+│   ├── project.ts           # GitHub Project / related-issue lookup
+│   ├── config.ts types.ts   # orchestrator config + shared types
+│   └── tests/               # workflow + adapter unit tests
+├── sandboxes/
+│   └── docker/              # custom bind-mount provider (UID 1000 sandbox)
+│       ├── docker.ts        # sandcastle Sandbox impl
+│       ├── chown.ts         # bind-mount ownership reconciliation
+│       ├── volumes.ts       # warm pnpm-store / node_modules volumes
+│       ├── process.ts       # process supervision inside the container
+│       └── tests/
 ├── .env.example             # ANTHROPIC_API_KEY lives here
 ├── logs/                    # per-run transcripts (gitignored)
 └── worktrees/               # ephemeral git worktrees per run (gitignored)
@@ -126,6 +141,8 @@ The host project itself is intentionally minimal: TypeScript + Biome,
 | `pnpm build:image` | (Re)build the sandbox Docker image                        |
 | `pnpm clean`       | Drop the persistent `node_modules` / pnpm-store volumes   |
 | `pnpm verify`      | `tsc --noEmit` + Biome `check` + `node --test`            |
+| `pnpm typecheck`   | `tsc --noEmit`                                            |
+| `pnpm check` / `check:fix` | Biome `check` (lint + format), with `--write`     |
 | `pnpm lint` / `format` | Biome lint / format                                   |
 | `pnpm test`        | Run the workflow / adapter unit tests                     |
 
@@ -133,11 +150,23 @@ The host project itself is intentionally minimal: TypeScript + Biome,
 
 ## Tuning
 
-- **Model, caps, transcript sink** — pass options to `runOrchestrator` in
-  `.sandcastle/main.ts` (`tickCap`, `attemptCap`, `model`, `transcript`).
-- **Stage behavior** — edit the relevant prompt under
-  `.sandcastle/prompts/`. Behavior changes belong there, not in adapter
-  code.
+`runOrchestrator` in `.sandcastle/main.ts` is the single configuration
+surface. Everything below is a knob you pass there:
+
+- **Per-stage agent and prompt** — the `stages` option binds an `agent`
+  and `promptFile` for each of `implement`, `review`, `merge`. Swap
+  `claudeCustom("claude-opus-4-6")` for a different model per stage, or
+  point a stage at a different prompt file. Behavior changes belong in
+  the prompts under `.sandcastle/prompts/`, not in adapter code.
+- **Sandbox runtime** — `sandbox` and `hooks` are injected from
+  `.sandcastle/sandbox.ts`. The default is the Docker provider under
+  `.sandcastle/sandboxes/docker/`; replace it with another sandcastle
+  `Sandbox` implementation to retarget the runtime without touching the
+  orchestrator.
+- **Caps** — `tickCap` and `attemptCap` bound the workflow loop and the
+  per-issue rework budget.
+- **Logs** — `logDir` controls where per-run transcripts land
+  (default in `main.ts`: `.sandcastle/logs`).
 - **Workflow logic** — `.sandcastle/lib/manager/` is a pure
   observe-decide-act loop. Add phases / actions there; keep adapters
   (`gh`, `git`, Docker, Projects) in `orchestrator.ts` and friends.
@@ -149,10 +178,11 @@ The host project itself is intentionally minimal: TypeScript + Biome,
 - Auth is API-key only. Subscription-based auth via `CLAUDE_CODE_OAUTH_TOKEN`
   is tracked upstream in
   [mattpocock/sandcastle#191](https://github.com/mattpocock/sandcastle/issues/191).
-- The sandbox runs as UID 1000 (`agent`); the custom provider in
+- The sandbox runs as UID 1000 (`agent`); the custom Docker provider in
   `.sandcastle/sandboxes/docker/` exists to keep file ownership sane on
   bind mounts — see the design notes in `docker.ts` and `chown.ts` before
-  changing it.
+  changing it. The runtime is decoupled from the orchestrator and can be
+  swapped via the `sandbox` / `hooks` options to `runOrchestrator`.
 - One concurrent sandbox container per issue. Cross-issue parallelism is
   bounded by `tickCap` and the manager, not by Docker.
 

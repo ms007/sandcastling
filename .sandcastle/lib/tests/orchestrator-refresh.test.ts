@@ -14,6 +14,35 @@ describe("refreshHostWorktree (real git)", () => {
   let originalCwd: string
   const git = (...a: string[]) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim()
 
+  /**
+   * Mirror what `casFastForward` does in production: advance `refs/heads/main`
+   * to a new commit *without* touching the host's index or working tree. Uses
+   * `commit-tree` + `update-ref` so the on-disk state diverges from HEAD in
+   * exactly the way the orchestrator leaves it after a successful merger run.
+   *
+   * Returns the new tip SHA. The new commit replaces `tracked.txt` with
+   * `newContent`, simulating a real merger result rather than an empty advance.
+   */
+  const advanceMainViaUpdateRef = (newContent: string, message: string): string => {
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: repo,
+      encoding: "utf8",
+      input: newContent,
+    }).trim()
+    const tree = execFileSync("git", ["mktree"], {
+      cwd: repo,
+      encoding: "utf8",
+      input: `100644 blob ${blob}\ttracked.txt\n`,
+    }).trim()
+    const parent = git("rev-parse", "main")
+    const newCommit = execFileSync("git", ["commit-tree", tree, "-p", parent, "-m", message], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim()
+    git("update-ref", "refs/heads/main", newCommit)
+    return newCommit
+  }
+
   before(() => {
     originalCwd = process.cwd()
     repo = mkdtempSync(join(tmpdir(), "sandcastle-refresh-test-"))
@@ -21,7 +50,9 @@ describe("refreshHostWorktree (real git)", () => {
     git("init", "-b", "main", "-q")
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Test")
-    git("commit", "--allow-empty", "-m", "initial")
+    writeFileSync(join(repo, "tracked.txt"), "starting\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "initial")
   })
 
   after(() => {
@@ -29,26 +60,35 @@ describe("refreshHostWorktree (real git)", () => {
     rmSync(repo, { recursive: true, force: true })
   })
 
-  it("happy path: ref advanced, tree aligned to new tip", () => {
+  it("happy path: ref advanced via update-ref, tree aligned to new tip", () => {
     const baseSha = git("rev-parse", "main")
     const baseRef: BaseRef = { sha: baseSha, refName: "main" }
 
-    // Advance the branch (simulates what commitMergerResultToBaseRef does).
-    git("commit", "--allow-empty", "-m", "merger advance")
-    const newTip = git("rev-parse", "main")
+    // Real bug scenario: advance the ref low-level so the host's index still
+    // reflects baseSha while HEAD (via refs/heads/main) resolves to a new tip
+    // with different file contents.
+    const newTip = advanceMainViaUpdateRef("advanced\n", "merger advance")
     assert.notEqual(baseSha, newTip)
+    // Sanity: the working tree was NOT touched by update-ref.
+    assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "starting\n")
 
     const result: WorkflowResult = { tag: "done", tickCount: 1 }
     const logs: string[] = []
     refreshHostWorktree(baseRef, result, (msg) => logs.push(msg))
 
-    // Working tree HEAD matches the new tip.
+    // Working tree HEAD matches the new tip and the file content was updated.
     assert.equal(git("rev-parse", "HEAD"), newTip)
+    assert.equal(readFileSync(join(repo, "tracked.txt"), "utf8"), "advanced\n")
     // Log mentions the refresh fired.
     assert.ok(
       logs.some((l) => l.includes("Refreshed")),
       `Expected 'Refreshed' log, got: ${JSON.stringify(logs)}`,
     )
+
+    // Restore baseline content for subsequent tests.
+    writeFileSync(join(repo, "tracked.txt"), "starting\n")
+    git("add", "tracked.txt")
+    git("commit", "-m", "restore baseline")
   })
 
   it("no-op when ref did not move", () => {

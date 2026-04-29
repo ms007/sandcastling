@@ -490,7 +490,7 @@ export function refreshHostWorktree(
     return
   }
   try {
-    ensureCleanWorktree()
+    ensureCleanWorktree(baseRef.sha)
   } catch {
     log("Worktree refresh skipped: worktree is dirty.")
     return

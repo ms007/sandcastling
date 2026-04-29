@@ -181,9 +181,20 @@ export const safeDeleteBranch = (branch: string, opts: { force?: boolean } = {})
   return true
 }
 
-export const ensureCleanWorktree = (): void => {
-  const hasUnstaged = tryGit("diff", "--quiet") === null
-  const hasStaged = tryGit("diff", "--cached", "--quiet") === null
+/**
+ * Throws when the working tree has tracked-file changes relative to `vsCommit`
+ * (defaults to HEAD). Untracked files are tolerated.
+ *
+ * Anchor against an explicit `vsCommit` for the post-success refresh re-check:
+ * by then the orchestrator has fast-forwarded `refs/heads/<branch>` via a
+ * low-level update-ref, so the index still reflects the starting commit while
+ * HEAD now resolves to the advanced tip — a HEAD-based check would read the
+ * entire ref-advance diff as "staged" and skip the refresh.
+ */
+export const ensureCleanWorktree = (vsCommit?: string): void => {
+  const tail = vsCommit ? [vsCommit] : []
+  const hasUnstaged = tryGit("diff", "--quiet", ...tail) === null
+  const hasStaged = tryGit("diff", "--cached", "--quiet", ...tail) === null
 
   if (!hasUnstaged && !hasStaged) return
 

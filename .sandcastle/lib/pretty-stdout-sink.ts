@@ -156,11 +156,13 @@ export function openPrettyStdoutSink(
       }
     },
     onAgentStream: (event) => {
-      const prefix = isFirstStreamEvent ? CORNER_PREFIX : CONTINUATION_PREFIX
-      isFirstStreamEvent = false
       const content =
         event.type === "text" ? event.message : `${event.name}(${event.formattedArgs})`
-      pane.appendLine(dim(`${prefix}${content}`))
+      for (const line of content.split("\n")) {
+        const prefix = isFirstStreamEvent ? CORNER_PREFIX : CONTINUATION_PREFIX
+        isFirstStreamEvent = false
+        pane.appendLine(dim(`${prefix}${line}`))
+      }
     },
     close: (result, error) => {
       const elapsed = formatDuration(Date.now() - startTime)

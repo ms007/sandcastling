@@ -68,7 +68,9 @@ function createStreamRenderer(
         appendLine(line: string): void {
           if (closed) return
           const prefix = prefixFor(streamKey)
-          out.write(`${prefix}${line}\n`)
+          for (const physicalLine of line.split("\n")) {
+            out.write(`${prefix}${physicalLine}\n`)
+          }
         },
 
         setTitle(_title: string): void {},
@@ -199,7 +201,9 @@ class TtyPaneHandle implements PaneHandle {
 
   appendLine(line: string): void {
     if (this.closed) return
-    this.lines.push(line)
+    for (const physicalLine of line.split("\n")) {
+      this.lines.push(physicalLine)
+    }
     this.onUpdate()
   }
 

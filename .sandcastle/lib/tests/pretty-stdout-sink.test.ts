@@ -983,6 +983,60 @@ describe("pretty-stdout-sink", () => {
       assert.ok(text.includes("Second line"))
       assert.match(text, /^ {4}Second line/)
     })
+
+    it("indents every physical line of a multi-line text event", () => {
+      const { pane, ops } = fakePaneHandle()
+      const sink = openPrettyStdoutSink(pane, NO_COLOR, makeHeader())
+      sink.onStageStart({
+        stage: "implement",
+        issue: { number: 31, title: "issue-31", itemId: null, branch: "sandcastle/issue-31" },
+        attempt: 1,
+      })
+      const opsBefore = ops.length
+      sink.onAgentStream({
+        type: "text",
+        message: "Heading\n- bullet one\n- bullet two\n\nFollow-up paragraph",
+        iteration: 1,
+        timestamp: new Date(),
+      })
+      const newLines = ops
+        .slice(opsBefore)
+        .filter((o) => o.type === "appendLine")
+        .map((o) => (o as { type: "appendLine"; line: string }).line)
+      assert.equal(newLines.length, 5, "each physical line should yield one appendLine call")
+      assert.match(newLines[0] as string, /^ {2}\| Heading$/)
+      assert.match(newLines[1] as string, /^ {4}- bullet one$/)
+      assert.match(newLines[2] as string, /^ {4}- bullet two$/)
+      assert.match(newLines[3] as string, /^ {4}$/)
+      assert.match(newLines[4] as string, /^ {4}Follow-up paragraph$/)
+    })
+
+    it("indents every physical line of a multi-line tool-call args block", () => {
+      const { pane, ops } = fakePaneHandle()
+      const sink = openPrettyStdoutSink(pane, NO_COLOR, makeHeader())
+      sink.onStageStart({
+        stage: "implement",
+        issue: { number: 31, title: "issue-31", itemId: null, branch: "sandcastle/issue-31" },
+        attempt: 1,
+      })
+      const opsBefore = ops.length
+      sink.onAgentStream({
+        type: "toolCall",
+        name: "Bash",
+        formattedArgs: "git commit -m \"$(cat <<'EOF'\nfeat: foo\nEOF\n)\"",
+        iteration: 1,
+        timestamp: new Date(),
+      })
+      const newLines = ops
+        .slice(opsBefore)
+        .filter((o) => o.type === "appendLine")
+        .map((o) => (o as { type: "appendLine"; line: string }).line)
+      assert.equal(newLines.length, 4)
+      assert.match(newLines[0] as string, /^ {2}\| Bash\(git commit -m "\$\(cat <<'EOF'$/)
+      assert.match(newLines[1] as string, /^ {4}feat: foo$/)
+      assert.match(newLines[2] as string, /^ {4}EOF$/)
+      assert.match(newLines[3] as string, /^ {4}\)"\)$/)
+    })
   })
 
   describe("agent stream — tool-call records", () => {

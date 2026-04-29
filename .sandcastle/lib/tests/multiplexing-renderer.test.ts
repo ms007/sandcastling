@@ -706,4 +706,38 @@ describe("MultiplexingRenderer", () => {
       assert.ok(bytes().includes(SHOW))
     })
   })
+
+  describe("multi-line appendLine defensive split", () => {
+    it("stream backend writes one terminal line per embedded \\n (single pane)", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, STREAM)
+      const pane = renderer.openPane("k", "test")
+      pane.appendLine("first\nsecond\nthird")
+      assert.equal(bytes(), "first\nsecond\nthird\n")
+    })
+
+    it("stream backend repeats the [streamKey] prefix on every physical line (multi pane)", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, STREAM)
+      const a = renderer.openPane("a", "a")
+      renderer.openPane("b", "b")
+      a.appendLine("first\nsecond")
+      assert.ok(
+        bytes().endsWith("[a] first\n[a] second\n"),
+        `expected per-line [a] prefix, got: ${JSON.stringify(bytes())}`,
+      )
+    })
+
+    it("TTY backend pushes one window entry per physical line", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, TTY)
+      const pane = renderer.openPane("k", "test")
+      pane.appendLine("alpha\nbeta\ngamma")
+      const final = bytes()
+      // Each physical line should appear on its own redrawn row, indented by the TTY pane gutter.
+      assert.ok(final.includes("  alpha\n"))
+      assert.ok(final.includes("  beta\n"))
+      assert.ok(final.includes("  gamma\n"))
+    })
+  })
 })

@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process"
 import { appendFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
+import type { AgentStreamEvent } from "@ai-hero/sandcastle"
 import * as sandcastle from "@ai-hero/sandcastle"
 import { ulid } from "ulid"
 import {
@@ -23,6 +24,7 @@ import {
   type ActionDeps,
   DEFAULT_ATTEMPT_CAP,
   DEFAULT_TICK_CAP,
+  type ImplementerStats,
   type IssueRef,
   MARKER_COMMENT_PREFIX,
   type MarkerComment,
@@ -34,6 +36,8 @@ import {
   actionIssueAndStage,
   runWorkflow,
 } from "./manager/index.ts"
+import { resolveOutputCapabilities } from "./palette.ts"
+import { type RunHeader, openPrettyStdoutSink } from "./pretty-stdout-sink.ts"
 import {
   type ProjectContext,
   type RelatedIssue,
@@ -59,7 +63,6 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
   ensureCleanWorktree()
 
   const runId = ulid()
-  console.log(`Run: ${runId}`)
 
   const resolved = resolveConfig(
     options,
@@ -77,35 +80,59 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
     tickCap: resolved.tickCap,
     attemptCap: resolved.attemptCap,
   })
-  console.log(
-    `Seed #${config.seed.number} ${config.seed.isPrd ? "(PRD)" : ""} with ${config.children.length} child issue(s).`,
-  )
 
   const transcriptOption: TranscriptOption =
     resolved.logDir !== undefined ? { kind: "file", dir: resolved.logDir } : { kind: "off" }
-  const sink = await openTranscriptSink(resolved.seedIssue, runId, owner, repo, transcriptOption)
-  if (sink.path) console.log(`Transcript: ${sink.path}`)
+  const transcript = await openTranscriptSink(
+    resolved.seedIssue,
+    runId,
+    owner,
+    repo,
+    transcriptOption,
+  )
+
+  const caps = resolveOutputCapabilities(
+    process.stdout.isTTY ?? false,
+    process.env.NO_COLOR,
+    process.env.SANDCASTLE_COLOR,
+  )
+  const prettyHeader: RunHeader = {
+    runId,
+    seed: { number: config.seed.number, isPrd: config.seed.isPrd },
+    children: config.children.map((c) => ({ number: c.number })),
+    logDir: resolved.logDir !== undefined ? join(resolved.logDir, runId) : undefined,
+    tickCap: resolved.tickCap,
+    attemptCap: resolved.attemptCap,
+  }
+  const pretty = openPrettyStdoutSink(process.stdout, caps, prettyHeader)
 
   const sandboxes = createSandboxCache(resolved)
 
   const deps: WorkflowDeps = {
     observe: buildObserveDeps(baseRef),
-    actions: buildActionDeps(ctx, baseRef, resolved, sandboxes),
-    hooks: { onTick: sink.onTick },
+    actions: buildActionDeps(ctx, baseRef, resolved, sandboxes, pretty.onAgentStream),
+    hooks: {
+      onTick: (event) => {
+        transcript.onTick(event)
+        pretty.onTick(event)
+      },
+      onStageStart: pretty.onStageStart,
+      onStageEnd: pretty.onStageEnd,
+    },
   }
 
   let result: WorkflowResult | null = null
   let error: Error | undefined
   try {
     result = await runWorkflow(config, deps)
-    console.log(`\nWorkflow result: ${JSON.stringify(result)}`)
     refreshHostWorktree(baseRef, result, console.log)
     return result
   } catch (err) {
     error = err instanceof Error ? err : new Error(String(err))
     throw err
   } finally {
-    await Promise.allSettled([sandboxes.disposeAll(), sink.close(result, error)])
+    pretty.close(result, error)
+    await Promise.allSettled([sandboxes.disposeAll(), transcript.close(result, error)])
   }
 }
 
@@ -273,6 +300,7 @@ function buildActionDeps(
   baseRef: BaseRef,
   resolved: ResolvedConfig,
   sandboxes: SandboxCache,
+  agentStreamCallback?: (event: AgentStreamEvent) => void,
 ): ActionDeps {
   const { implement, review, merge } = resolved.stages
   const { logDir, runId } = resolved
@@ -285,9 +313,9 @@ function buildActionDeps(
     closeIssue: async (n) => {
       await execFileP("gh", ["issue", "close", String(n)])
     },
-    runImplementer: async (issue, priorAttempts) => {
+    runImplementer: async (issue, priorAttempts): Promise<ImplementerStats> => {
       const sandbox = await sandboxes.get(issue)
-      await runImplementer({
+      return await runImplementer({
         sandbox,
         issue,
         baseRef,
@@ -295,6 +323,7 @@ function buildActionDeps(
         config: implement,
         logDir,
         runId,
+        ...(agentStreamCallback && { onAgentStreamEvent: agentStreamCallback }),
       })
     },
     runReviewer: async (issue, priorAttempts) => {
@@ -306,6 +335,7 @@ function buildActionDeps(
         config: review,
         logDir,
         runId,
+        ...(agentStreamCallback && { onAgentStreamEvent: agentStreamCallback }),
       })
       if (verdict.tag === "approved") await sandboxes.release(issue.number)
       return verdict
@@ -323,6 +353,7 @@ function buildActionDeps(
         logDir,
         runId,
         waveIndex: currentWave,
+        ...(agentStreamCallback && { onAgentStreamEvent: agentStreamCallback }),
       })
       mergerBaseRef = commitWaveMergerResult(currentBaseRef, mergeBranch, currentWave, console.log)
       waveIndex++

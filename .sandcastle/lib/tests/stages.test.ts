@@ -1,10 +1,10 @@
 import { strict as assert } from "node:assert"
 import { describe, it } from "node:test"
-import type { AgentProvider, SandboxProvider } from "@ai-hero/sandcastle"
+import type { AgentProvider, AgentStreamEvent, SandboxProvider } from "@ai-hero/sandcastle"
 import { WORKFLOW_TOKENS, __testing as configTesting, resolveConfig } from "../config.ts"
 import { __testing } from "../stages.ts"
 
-const { issuePromptArgs, buildMergerRunOptions } = __testing
+const { issuePromptArgs, buildMergerRunOptions, stageLogging } = __testing
 const { validateStage, resolveContainerStage } = configTesting
 
 const fakeAgent = { name: "fake-agent" } as unknown as AgentProvider
@@ -592,5 +592,98 @@ describe("resolveContainerStage", () => {
       WORKFLOW_TOKENS.implement,
     )
     assert.equal("hooks" in result, false)
+  })
+})
+
+describe("stageLogging — agent-stream callback plumbing", () => {
+  it("attaches onAgentStreamEvent to file logging when callback is provided", () => {
+    const cb = () => {}
+    const logging = stageLogging("/tmp/logs", "RUN_1", "test-file", cb)
+    assert.equal(logging.type, "file")
+    assert.equal((logging as { onAgentStreamEvent?: unknown }).onAgentStreamEvent, cb)
+  })
+
+  it("omits onAgentStreamEvent from file logging when callback is undefined", () => {
+    const logging = stageLogging("/tmp/logs", "RUN_1", "test-file")
+    assert.equal(logging.type, "file")
+    assert.equal("onAgentStreamEvent" in logging, false)
+  })
+
+  it("returns stdout logging without callback regardless", () => {
+    const cb = () => {}
+    const logging = stageLogging(undefined, "RUN_1", "test-file", cb)
+    assert.equal(logging.type, "stdout")
+    assert.equal("onAgentStreamEvent" in logging, false)
+  })
+
+  it("passes events through callback in order", () => {
+    const received: AgentStreamEvent[] = []
+    const cb = (event: AgentStreamEvent) => received.push(event)
+    const logging = stageLogging("/tmp/logs", "RUN_1", "test-file", cb)
+
+    const events: AgentStreamEvent[] = [
+      { type: "text", message: "Hello", iteration: 1, timestamp: new Date("2026-01-01") },
+      {
+        type: "toolCall",
+        name: "Read",
+        formattedArgs: "file.ts",
+        iteration: 1,
+        timestamp: new Date("2026-01-01"),
+      },
+      { type: "text", message: "Done", iteration: 2, timestamp: new Date("2026-01-01") },
+    ]
+
+    const fire = (logging as { onAgentStreamEvent: (e: AgentStreamEvent) => void })
+      .onAgentStreamEvent
+    for (const event of events) fire(event)
+
+    assert.equal(received.length, 3)
+    assert.equal(received[0]?.type, "text")
+    assert.equal(received[0]?.message, "Hello")
+    assert.equal(received[1]?.type, "toolCall")
+    assert.equal(received[1]?.name, "Read")
+    assert.equal(received[2]?.type, "text")
+    assert.equal(received[2]?.message, "Done")
+  })
+})
+
+describe("buildMergerRunOptions — agent-stream callback", () => {
+  const baseRef = { sha: "abcdef1234567890abcdef1234567890abcdef12", refName: "main" }
+  const mergeBranch = "sandcastle/tmp-merge/42"
+  const issues = [{ number: 1, title: "alpha", itemId: "A", branch: "sandcastle/issue-1" }]
+  const mergeConfig = {
+    agent: fakeAgent,
+    promptFile: ".sandcastle/prompts/merge.md",
+    promptArgs: {},
+    sandbox: fakeSandbox,
+  }
+  const runId = "01JTEST"
+
+  it("attaches onAgentStreamEvent when callback is provided", () => {
+    const cb = () => {}
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/tmp/logs",
+      runId,
+      onAgentStreamEvent: cb,
+    })
+    const logging = opts.logging as { type: "file"; onAgentStreamEvent?: unknown }
+    assert.equal(logging.type, "file")
+    assert.equal(logging.onAgentStreamEvent, cb)
+  })
+
+  it("omits onAgentStreamEvent when callback is not provided", () => {
+    const opts = buildMergerRunOptions({
+      issues,
+      baseRef,
+      mergeBranch,
+      config: mergeConfig,
+      logDir: "/tmp/logs",
+      runId,
+    })
+    assert.equal("onAgentStreamEvent" in (opts.logging ?? {}), false)
   })
 })

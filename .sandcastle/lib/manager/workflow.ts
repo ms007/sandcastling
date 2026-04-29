@@ -1,3 +1,4 @@
+import type { IssueRef } from "../types.ts"
 import { execute } from "./actions.ts"
 import { actionIssueAndStage, computeObservationHash, stageKey } from "./attempts.ts"
 import { decide } from "./decision.ts"
@@ -6,10 +7,13 @@ import type {
   Action,
   ActionDeps,
   Decision,
+  ExecuteResult,
   IssueSnapshot,
   MarkerComment,
   Observation,
   ObserveDeps,
+  StageOutcome,
+  WaveAnnotation,
   WorkflowConfig,
   WorkflowResult,
   WorkflowState,
@@ -21,12 +25,31 @@ export const DEFAULT_ATTEMPT_CAP = 5
 export interface WorkflowHooks {
   /** Fires after observe+decide, before execute. */
   onTick?: (event: TickEvent) => void
+  onStageStart?: (event: StageStartEvent) => void
+  onStageEnd?: (event: StageEndEvent) => void
 }
 
 export interface TickEvent {
   readonly tickCount: number
   readonly observation: Observation
   readonly decision: Decision
+}
+
+export interface StageStartEvent {
+  readonly stage: "implement" | "review" | "merge"
+  readonly issue: IssueRef
+  readonly wave?: WaveAnnotation | undefined
+  readonly attempt: number
+}
+
+export interface StageEndEvent {
+  readonly stage: "implement" | "review" | "merge"
+  readonly issue: IssueRef
+  readonly wave?: WaveAnnotation | undefined
+  readonly attempt: number
+  readonly durationMs: number
+  readonly outcome?: StageOutcome | undefined
+  readonly error?: Error | undefined
 }
 
 export interface WorkflowDeps {
@@ -72,7 +95,34 @@ export async function runWorkflow(
     }
 
     const priorAttempts = buildPriorAttemptsForAction(decision.action, observation, state)
-    state = await execute(decision.action, state, deps.actions, priorAttempts)
+
+    const stageEvent = buildStageEventBase(decision, state)
+    if (stageEvent) deps.hooks?.onStageStart?.(stageEvent)
+
+    const t0 = Date.now()
+    let executeResult: ExecuteResult
+    try {
+      executeResult = await execute(decision.action, state, deps.actions, priorAttempts)
+    } catch (err) {
+      if (stageEvent) {
+        deps.hooks?.onStageEnd?.({
+          ...stageEvent,
+          durationMs: Date.now() - t0,
+          error: err instanceof Error ? err : new Error(String(err)),
+        })
+      }
+      throw err
+    }
+
+    const { state: newState, stageOutcome } = executeResult
+    if (stageEvent) {
+      deps.hooks?.onStageEnd?.({
+        ...stageEvent,
+        durationMs: Date.now() - t0,
+        outcome: stageOutcome,
+      })
+    }
+    state = newState
 
     const target = actionIssueAndStage(decision.action)
     let stageAttempts = state.stageAttempts
@@ -128,4 +178,33 @@ function buildPriorAttemptsForAction(
 function findSnapshot(observation: Observation, issueNumber: number): IssueSnapshot | undefined {
   if (observation.seed.issue.number === issueNumber) return observation.seed
   return observation.children.find((c) => c.issue.number === issueNumber)
+}
+
+function buildStageEventBase(
+  decision: Extract<Decision, { tag: "act" }>,
+  state: WorkflowState,
+): StageStartEvent | null {
+  const { action, wave } = decision
+  switch (action.tag) {
+    case "runImplementer":
+    case "runReviewer":
+      return {
+        stage: action.tag === "runImplementer" ? "implement" : "review",
+        issue: action.issue,
+        wave,
+        attempt: (state.stageAttempts.get(stageKey(action.issue.number, action.tag)) ?? 0) + 1,
+      }
+    case "runMerger": {
+      const first = action.issues[0]
+      if (!first) return null
+      return {
+        stage: "merge",
+        issue: first,
+        wave,
+        attempt: (state.stageAttempts.get(stageKey(first.number, action.tag)) ?? 0) + 1,
+      }
+    }
+    default:
+      return null
+  }
 }

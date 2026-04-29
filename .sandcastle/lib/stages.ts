@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import type { LoggingOption, RunOptions } from "@ai-hero/sandcastle"
+import type { AgentStreamEvent, LoggingOption, RunOptions } from "@ai-hero/sandcastle"
 import * as sandcastle from "@ai-hero/sandcastle"
 import {
   type ResolvedContainerStageConfig,
@@ -8,7 +8,7 @@ import {
 } from "./config.ts"
 import { type BaseRef, countCommitsAhead, formatBaseRef } from "./git.ts"
 import { parseImplementerResult, parseReviewerVerdict } from "./manager/result.ts"
-import type { ReviewerVerdict } from "./manager/types.ts"
+import type { ImplementerStats, ReviewerVerdict } from "./manager/types.ts"
 import type { IssueRef } from "./types.ts"
 
 const COMPLETION_SIGNALS = {
@@ -30,9 +30,14 @@ const stageLogging = (
   logDir: string | undefined,
   runId: string,
   filename: string,
+  onAgentStreamEvent?: (event: AgentStreamEvent) => void,
 ): LoggingOption =>
   logDir !== undefined
-    ? { type: "file", path: join(logDir, runId, `${sanitizeForFilename(filename)}.log`) }
+    ? {
+        type: "file",
+        path: join(logDir, runId, `${sanitizeForFilename(filename)}.log`),
+        ...(onAgentStreamEvent && { onAgentStreamEvent }),
+      }
     : { type: "stdout" }
 
 export const runImplementer = async ({
@@ -43,6 +48,7 @@ export const runImplementer = async ({
   config,
   logDir,
   runId,
+  onAgentStreamEvent,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
@@ -51,7 +57,8 @@ export const runImplementer = async ({
   config: ResolvedStageConfig
   logDir: string | undefined
   runId: string
-}): Promise<void> => {
+  onAgentStreamEvent?: (event: AgentStreamEvent) => void
+}): Promise<ImplementerStats> => {
   const result = await sandbox.run({
     name: `Implementer #${issue.number}`,
     agent: config.agent,
@@ -63,7 +70,7 @@ export const runImplementer = async ({
       ...issuePromptArgs(issue, priorAttempts),
     },
     completionSignal: COMPLETION_SIGNALS.implement,
-    logging: stageLogging(logDir, runId, `implementer-issue-${issue.number}`),
+    logging: stageLogging(logDir, runId, `implementer-issue-${issue.number}`, onAgentStreamEvent),
   })
 
   const verdict = parseImplementerResult(result.stdout)
@@ -79,9 +86,7 @@ export const runImplementer = async ({
     )
   }
 
-  console.log(
-    `Implementer for #${issue.number}: ${result.commits.length} new commit(s) this session, ${totalAhead} total ahead of ${baseLabel}.`,
-  )
+  return { newCommits: result.commits.length, totalAhead }
 }
 
 export const runReviewer = async ({
@@ -91,6 +96,7 @@ export const runReviewer = async ({
   config,
   logDir,
   runId,
+  onAgentStreamEvent,
 }: {
   sandbox: sandcastle.Sandbox
   issue: IssueRef
@@ -98,6 +104,7 @@ export const runReviewer = async ({
   config: ResolvedStageConfig
   logDir: string | undefined
   runId: string
+  onAgentStreamEvent?: (event: AgentStreamEvent) => void
 }): Promise<ReviewerVerdict> => {
   const result = await sandbox.run({
     name: `Reviewer #${issue.number}`,
@@ -110,7 +117,7 @@ export const runReviewer = async ({
       ...issuePromptArgs(issue, priorAttempts),
     },
     completionSignal: COMPLETION_SIGNALS.review,
-    logging: stageLogging(logDir, runId, `reviewer-issue-${issue.number}`),
+    logging: stageLogging(logDir, runId, `reviewer-issue-${issue.number}`, onAgentStreamEvent),
   })
 
   return parseReviewerVerdict(result.stdout)
@@ -125,6 +132,7 @@ interface MergerParams {
   readonly logDir: string | undefined
   readonly runId: string
   readonly waveIndex?: number
+  readonly onAgentStreamEvent?: (event: AgentStreamEvent) => void
 }
 
 const mergerLogName = (waveIndex: number | undefined): string =>
@@ -139,6 +147,7 @@ const buildMergerRunOptions = ({
   logDir,
   runId,
   waveIndex,
+  onAgentStreamEvent,
 }: MergerParams): RunOptions => ({
   sandbox: config.sandbox,
   ...spreadOptional("hooks", config.hooks),
@@ -156,7 +165,7 @@ const buildMergerRunOptions = ({
   },
   branchStrategy: { type: "branch", branch: mergeBranch, baseBranch: baseRef.sha },
   completionSignal: COMPLETION_SIGNALS.merge,
-  logging: stageLogging(logDir, runId, mergerLogName(waveIndex)),
+  logging: stageLogging(logDir, runId, mergerLogName(waveIndex), onAgentStreamEvent),
 })
 
 export const runMerger = async (params: MergerParams): Promise<void> => {
@@ -164,4 +173,4 @@ export const runMerger = async (params: MergerParams): Promise<void> => {
 }
 
 /** Test seam — internal helpers exposed for unit tests. Not a public API. */
-export const __testing = { issuePromptArgs, buildMergerRunOptions }
+export const __testing = { issuePromptArgs, buildMergerRunOptions, stageLogging }

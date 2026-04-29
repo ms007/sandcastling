@@ -6,6 +6,7 @@ import { observe } from "../manager/observation.ts"
 import type {
   Action,
   ActionDeps,
+  ImplementerStats,
   MarkerComment,
   ObserveDeps,
   ReviewerVerdict,
@@ -13,7 +14,7 @@ import type {
   WorkflowState,
 } from "../manager/types.ts"
 import { buildPriorAttemptsBlock, runWorkflow, tick } from "../manager/workflow.ts"
-import type { TickEvent } from "../manager/workflow.ts"
+import type { StageEndEvent, StageStartEvent, TickEvent } from "../manager/workflow.ts"
 import type { StatusName } from "../project.ts"
 import type { IssueRef } from "../types.ts"
 
@@ -73,8 +74,9 @@ function fakeActionDeps(options?: {
     closeIssue: async (n: number) => {
       log.push(`closeIssue(${n})`)
     },
-    runImplementer: async (i: IssueRef, priorAttempts: string) => {
+    runImplementer: async (i: IssueRef, priorAttempts: string): Promise<ImplementerStats> => {
       log.push(`runImplementer(${i.number}${priorAttempts ? ", withPriorAttempts" : ""})`)
+      return { newCommits: 1, totalAhead: 1 }
     },
     runReviewer: async (i: IssueRef, _priorAttempts: string): Promise<ReviewerVerdict> => {
       const issueVerdicts = verdicts.get(i.number)
@@ -251,7 +253,8 @@ describe("execute", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "claimIssue", issue: issue(1) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "claimed")
+    assert.equal(next.state.phases.get(1), "claimed")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, ["moveStatus(item-1, In Progress)"])
   })
 
@@ -259,7 +262,8 @@ describe("execute", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "claimIssue", issue: issue(1, null) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "claimed")
+    assert.equal(next.state.phases.get(1), "claimed")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, [])
   })
 
@@ -270,9 +274,13 @@ describe("execute", () => {
       issues: [issue(1), issue(2), issue(3)],
     }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "merged")
-    assert.equal(next.phases.get(2), "merged")
-    assert.equal(next.phases.get(3), "merged")
+    assert.equal(next.state.phases.get(1), "merged")
+    assert.equal(next.state.phases.get(2), "merged")
+    assert.equal(next.state.phases.get(3), "merged")
+    assert.equal(next.stageOutcome?.tag, "merger")
+    if (next.stageOutcome?.tag === "merger") {
+      assert.deepEqual(next.stageOutcome.issues, [1, 2, 3])
+    }
     assert.deepEqual(log, ["runMerger([1,2,3])"])
   })
 
@@ -280,7 +288,8 @@ describe("execute", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "finalizeIssue", issue: issue(5) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(5), "done")
+    assert.equal(next.state.phases.get(5), "done")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, ["moveStatus(item-5, Done)", "unblockDependents(5)"])
   })
 
@@ -288,7 +297,8 @@ describe("execute", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "finalizePrd", issue: issue(10) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(10), "done")
+    assert.equal(next.state.phases.get(10), "done")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, ["moveStatus(item-10, Done)", "closeIssue(10)", "unblockDependents(10)"])
   })
 
@@ -296,7 +306,7 @@ describe("execute", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "finalizePrd", issue: issue(10, null) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(10), "done")
+    assert.equal(next.state.phases.get(10), "done")
     assert.deepEqual(log, ["closeIssue(10)", "unblockDependents(10)"])
   })
 })
@@ -306,7 +316,8 @@ describe("execute — individual action types", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "runImplementer", issue: issue(1) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "implemented")
+    assert.equal(next.state.phases.get(1), "implemented")
+    assert.equal(next.stageOutcome?.tag, "implementer")
     assert.deepEqual(log, ["runImplementer(1)"])
   })
 
@@ -314,7 +325,8 @@ describe("execute — individual action types", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "promoteToReview", issue: issue(1) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "promoted")
+    assert.equal(next.state.phases.get(1), "promoted")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, ["moveStatus(item-1, In Review)"])
   })
 
@@ -322,7 +334,8 @@ describe("execute — individual action types", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "promoteToReview", issue: issue(1, null) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "promoted")
+    assert.equal(next.state.phases.get(1), "promoted")
+    assert.equal(next.stageOutcome, undefined)
     assert.deepEqual(log, [])
   })
 
@@ -330,7 +343,11 @@ describe("execute — individual action types", () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "runReviewer", issue: issue(1) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "reviewed")
+    assert.equal(next.state.phases.get(1), "reviewed")
+    assert.equal(next.stageOutcome?.tag, "reviewer")
+    if (next.stageOutcome?.tag === "reviewer") {
+      assert.equal(next.stageOutcome.verdict.tag, "approved")
+    }
     assert.deepEqual(log, ["runReviewer(1)"])
   })
 
@@ -339,8 +356,12 @@ describe("execute — individual action types", () => {
     const { deps, log } = fakeActionDeps({ reviewerVerdicts: verdicts })
     const action: Action = { tag: "runReviewer", issue: issue(1) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "reviewedRework")
-    assert.equal(next.reworkReasons.get(1), "tests failing")
+    assert.equal(next.state.phases.get(1), "reviewedRework")
+    assert.equal(next.state.reworkReasons.get(1), "tests failing")
+    assert.equal(next.stageOutcome?.tag, "reviewer")
+    if (next.stageOutcome?.tag === "reviewer") {
+      assert.equal(next.stageOutcome.verdict.tag, "rework")
+    }
     assert.deepEqual(log, ["runReviewer(1)"])
   })
 
@@ -357,8 +378,12 @@ describe("execute — individual action types", () => {
     }
     const action: Action = { tag: "runMerger", issues: [] }
     const next = await execute(action, state, deps)
-    assert.equal(next.phases.get(5), "reviewed")
-    assert.equal(next.tickCount, 3)
+    assert.equal(next.state.phases.get(5), "reviewed")
+    assert.equal(next.state.tickCount, 3)
+    assert.equal(next.stageOutcome?.tag, "merger")
+    if (next.stageOutcome?.tag === "merger") {
+      assert.deepEqual(next.stageOutcome.issues, [])
+    }
     assert.deepEqual(log, ["runMerger([])"])
   })
 })
@@ -381,9 +406,10 @@ describe("execute — applyReworkVerdict", () => {
       reason: "tests failing",
     }
     const next = await execute(action, state, deps)
-    assert.equal(next.phases.get(1), "claimed")
-    assert.equal(next.attempts.get(1), 2)
-    assert.equal(next.reworkReasons.has(1), false)
+    assert.equal(next.state.phases.get(1), "claimed")
+    assert.equal(next.state.attempts.get(1), 2)
+    assert.equal(next.state.reworkReasons.has(1), false)
+    assert.equal(next.stageOutcome, undefined)
     assert.ok(log.includes("postMarkerComment(1)"))
     assert.ok(log.includes("moveStatus(item-1, In Progress)"))
   })
@@ -427,7 +453,7 @@ describe("execute — applyReworkVerdict", () => {
       reason: "needs refactor",
     }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(1), "claimed")
+    assert.equal(next.state.phases.get(1), "claimed")
     assert.ok(log.includes("postMarkerComment(1)"))
     assert.ok(!log.some((l) => l.startsWith("moveStatus")))
   })
@@ -449,8 +475,8 @@ describe("execute — applyReworkVerdict", () => {
       reason: "third time",
     }
     const next = await execute(action, state, deps)
-    assert.equal(next.attempts.get(1), 4)
-    assert.equal(next.phases.get(1), "claimed")
+    assert.equal(next.state.attempts.get(1), 4)
+    assert.equal(next.state.phases.get(1), "claimed")
   })
 })
 
@@ -468,7 +494,7 @@ describe("execute — state preservation", () => {
     }
     const action: Action = { tag: "claimIssue", issue: issue(1) }
     const next = await execute(action, state, deps)
-    assert.equal(next.tickCount, 7)
+    assert.equal(next.state.tickCount, 7)
   })
 
   it("preserves phases of unrelated issues", async () => {
@@ -487,16 +513,16 @@ describe("execute — state preservation", () => {
     }
     const action: Action = { tag: "claimIssue", issue: issue(1) }
     const next = await execute(action, state, deps)
-    assert.equal(next.phases.get(1), "claimed")
-    assert.equal(next.phases.get(2), "reviewed")
-    assert.equal(next.phases.get(3), "done")
+    assert.equal(next.state.phases.get(1), "claimed")
+    assert.equal(next.state.phases.get(2), "reviewed")
+    assert.equal(next.state.phases.get(3), "done")
   })
 
   it("finalizeIssue skips moveStatus when itemId is null", async () => {
     const { deps, log } = fakeActionDeps()
     const action: Action = { tag: "finalizeIssue", issue: issue(5, null) }
     const next = await execute(action, emptyState, deps)
-    assert.equal(next.phases.get(5), "done")
+    assert.equal(next.state.phases.get(5), "done")
     assert.deepEqual(log, ["unblockDependents(5)"])
   })
 
@@ -513,7 +539,7 @@ describe("execute — state preservation", () => {
     }
     const action: Action = { tag: "claimIssue", issue: issue(2) }
     const next = await execute(action, state, deps)
-    assert.equal(next.attempts.get(1), 3)
+    assert.equal(next.state.attempts.get(1), 3)
   })
 })
 
@@ -1189,6 +1215,219 @@ describe("runWorkflow — two-wave PRD wave annotations", () => {
       if (t.decision.tag === "act") {
         assert.deepEqual(t.decision.wave?.issues, [2, 3])
       }
+    }
+  })
+})
+
+describe("runWorkflow — stage-lifecycle events", () => {
+  it("emits stage-start and stage-end for a clean single-issue run", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    const starts: StageStartEvent[] = []
+    const ends: StageEndEvent[] = []
+    const result = await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+      hooks: {
+        onStageStart: (e) => starts.push(e),
+        onStageEnd: (e) => ends.push(e),
+      },
+    })
+    assert.equal(result.tag, "done")
+
+    assert.equal(starts.length, 3)
+    assert.equal(ends.length, 3)
+
+    assert.equal(starts[0]?.stage, "implement")
+    assert.equal(starts[0]?.issue.number, 1)
+    assert.equal(starts[0]?.attempt, 1)
+
+    assert.equal(starts[1]?.stage, "review")
+    assert.equal(starts[1]?.issue.number, 1)
+    assert.equal(starts[1]?.attempt, 1)
+
+    assert.equal(starts[2]?.stage, "merge")
+    assert.equal(starts[2]?.issue.number, 1)
+    assert.equal(starts[2]?.attempt, 1)
+
+    assert.equal(ends[0]?.stage, "implement")
+    assert.equal(ends[0]?.outcome?.tag, "implementer")
+    assert.ok(ends[0]?.durationMs !== undefined)
+
+    assert.equal(ends[1]?.stage, "review")
+    assert.equal(ends[1]?.outcome?.tag, "reviewer")
+    if (ends[1]?.outcome?.tag === "reviewer") {
+      assert.equal(ends[1].outcome.verdict.tag, "approved")
+    }
+
+    assert.equal(ends[2]?.stage, "merge")
+    assert.equal(ends[2]?.outcome?.tag, "merger")
+    if (ends[2]?.outcome?.tag === "merger") {
+      assert.deepEqual(ends[2].outcome.issues, [1])
+    }
+  })
+
+  it("emits correct attempt numbers across a rework loop", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const commentStore = fakeCommentStore()
+    const verdicts = new Map([[1, [{ tag: "rework" as const, reason: "tests failing" }]]])
+    const { deps } = fakeActionDeps({ reviewerVerdicts: verdicts, commentStore })
+    const starts: StageStartEvent[] = []
+    const ends: StageEndEvent[] = []
+    const result = await runWorkflow(config, {
+      observe: {
+        getCommitsAhead: () => 0,
+        getMarkerComments: commentStore.observeDep,
+      },
+      actions: deps,
+      hooks: {
+        onStageStart: (e) => starts.push(e),
+        onStageEnd: (e) => ends.push(e),
+      },
+    })
+    assert.equal(result.tag, "done")
+
+    const implStarts = starts.filter((s) => s.stage === "implement")
+    assert.equal(implStarts.length, 2)
+    assert.equal(implStarts[0]?.attempt, 1)
+    assert.equal(implStarts[1]?.attempt, 2)
+
+    const reviewStarts = starts.filter((s) => s.stage === "review")
+    assert.equal(reviewStarts.length, 2)
+    assert.equal(reviewStarts[0]?.attempt, 1)
+    assert.equal(reviewStarts[1]?.attempt, 2)
+
+    const reviewEnds = ends.filter((e) => e.stage === "review")
+    assert.equal(reviewEnds.length, 2)
+    if (reviewEnds[0]?.outcome?.tag === "reviewer") {
+      assert.equal(reviewEnds[0].outcome.verdict.tag, "rework")
+      if (reviewEnds[0].outcome.verdict.tag === "rework") {
+        assert.equal(reviewEnds[0].outcome.verdict.reason, "tests failing")
+      }
+    }
+    if (reviewEnds[1]?.outcome?.tag === "reviewer") {
+      assert.equal(reviewEnds[1].outcome.verdict.tag, "approved")
+    }
+  })
+
+  it("emits stage-end with error on crash mid-stage", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    deps.runImplementer = async () => {
+      throw new Error("sandbox exploded")
+    }
+    const starts: StageStartEvent[] = []
+    const ends: StageEndEvent[] = []
+
+    await assert.rejects(
+      () =>
+        runWorkflow(config, {
+          observe: noopObserveDeps,
+          actions: deps,
+          hooks: {
+            onStageStart: (e) => starts.push(e),
+            onStageEnd: (e) => ends.push(e),
+          },
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.equal(err.message, "sandbox exploded")
+        return true
+      },
+    )
+
+    assert.equal(starts.length, 1)
+    assert.equal(starts[0]?.stage, "implement")
+
+    assert.equal(ends.length, 1)
+    assert.equal(ends[0]?.stage, "implement")
+    assert.ok(ends[0]?.error instanceof Error)
+    assert.equal(ends[0]?.error?.message, "sandbox exploded")
+    assert.equal(ends[0]?.outcome, undefined)
+  })
+
+  it("does not emit stage events for bookkeeping actions", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    const starts: StageStartEvent[] = []
+    await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+      hooks: { onStageStart: (e) => starts.push(e) },
+    })
+
+    for (const s of starts) {
+      assert.ok(["implement", "review", "merge"].includes(s.stage))
+    }
+  })
+
+  it("stage-end carries implementer stats", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(1), isPrd: false },
+      children: [],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    deps.runImplementer = async (): Promise<ImplementerStats> => {
+      return { newCommits: 3, totalAhead: 7 }
+    }
+    const ends: StageEndEvent[] = []
+    await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+      hooks: { onStageEnd: (e) => ends.push(e) },
+    })
+
+    const implEnd = ends.find((e) => e.stage === "implement")
+    assert.ok(implEnd)
+    assert.equal(implEnd.outcome?.tag, "implementer")
+    if (implEnd.outcome?.tag === "implementer") {
+      assert.equal(implEnd.outcome.stats.newCommits, 3)
+      assert.equal(implEnd.outcome.stats.totalAhead, 7)
+    }
+  })
+
+  it("merger stage-end carries issue list", async () => {
+    const config: WorkflowConfig = {
+      seed: { ...issue(100), isPrd: true },
+      children: [issue(1), issue(2), issue(3)],
+      tickCap: 50,
+      attemptCap: 100,
+    }
+    const { deps } = fakeActionDeps()
+    const ends: StageEndEvent[] = []
+    await runWorkflow(config, {
+      observe: noopObserveDeps,
+      actions: deps,
+      hooks: { onStageEnd: (e) => ends.push(e) },
+    })
+
+    const mergeEnd = ends.find((e) => e.stage === "merge")
+    assert.ok(mergeEnd)
+    assert.equal(mergeEnd.outcome?.tag, "merger")
+    if (mergeEnd.outcome?.tag === "merger") {
+      assert.deepEqual(mergeEnd.outcome.issues, [1, 2, 3])
     }
   })
 })

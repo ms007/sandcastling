@@ -1,6 +1,6 @@
 import type { StatusName } from "../project.ts"
 import type { IssueRef } from "../types.ts"
-import type { Action, ActionDeps, IssuePhase, WorkflowState } from "./types.ts"
+import type { Action, ActionDeps, ExecuteResult, IssuePhase, WorkflowState } from "./types.ts"
 
 export const MARKER_COMMENT_PREFIX = "<!-- sandcastle:rework"
 
@@ -17,37 +17,49 @@ export async function execute(
   state: WorkflowState,
   deps: ActionDeps,
   priorAttempts = "",
-): Promise<WorkflowState> {
+): Promise<ExecuteResult> {
   switch (action.tag) {
     case "claimIssue": {
       await moveStatusIfTracked(deps, action.issue, "In Progress")
-      return updatePhase(state, action.issue.number, "claimed")
+      return { state: updatePhase(state, action.issue.number, "claimed") }
     }
     case "runImplementer": {
-      await deps.runImplementer(action.issue, priorAttempts)
-      return updatePhase(state, action.issue.number, "implemented")
+      const stats = await deps.runImplementer(action.issue, priorAttempts)
+      return {
+        state: updatePhase(state, action.issue.number, "implemented"),
+        stageOutcome: { tag: "implementer", stats },
+      }
     }
     case "promoteToReview": {
       await moveStatusIfTracked(deps, action.issue, "In Review")
-      return updatePhase(state, action.issue.number, "promoted")
+      return { state: updatePhase(state, action.issue.number, "promoted") }
     }
     case "runReviewer": {
       const verdict = await deps.runReviewer(action.issue, priorAttempts)
       if (verdict.tag === "approved") {
-        return updatePhase(state, action.issue.number, "reviewed")
+        return {
+          state: updatePhase(state, action.issue.number, "reviewed"),
+          stageOutcome: { tag: "reviewer", verdict },
+        }
       }
       const reworkReasons = new Map(state.reworkReasons)
       reworkReasons.set(action.issue.number, verdict.reason)
       return {
-        ...updatePhase(state, action.issue.number, "reviewedRework"),
-        reworkReasons,
+        state: {
+          ...updatePhase(state, action.issue.number, "reviewedRework"),
+          reworkReasons,
+        },
+        stageOutcome: { tag: "reviewer", verdict },
       }
     }
     case "runMerger": {
       await deps.runMerger(action.issues, priorAttempts)
       const phases = new Map(state.phases)
       for (const issue of action.issues) phases.set(issue.number, "merged")
-      return { ...state, phases }
+      return {
+        state: { ...state, phases },
+        stageOutcome: { tag: "merger", issues: action.issues.map((i) => i.number) },
+      }
     }
     case "applyReworkVerdict": {
       const currentAttempt = state.attempts.get(action.issue.number) ?? 1
@@ -65,21 +77,23 @@ export async function execute(
       const reworkReasons = new Map(state.reworkReasons)
       reworkReasons.delete(action.issue.number)
       return {
-        ...updatePhase(state, action.issue.number, "claimed"),
-        attempts,
-        reworkReasons,
+        state: {
+          ...updatePhase(state, action.issue.number, "claimed"),
+          attempts,
+          reworkReasons,
+        },
       }
     }
     case "finalizeIssue": {
       await moveStatusIfTracked(deps, action.issue, "Done")
       await deps.unblockDependents(action.issue.number)
-      return updatePhase(state, action.issue.number, "done")
+      return { state: updatePhase(state, action.issue.number, "done") }
     }
     case "finalizePrd": {
       await moveStatusIfTracked(deps, action.issue, "Done")
       await deps.closeIssue(action.issue.number)
       await deps.unblockDependents(action.issue.number)
-      return updatePhase(state, action.issue.number, "done")
+      return { state: updatePhase(state, action.issue.number, "done") }
     }
   }
 }

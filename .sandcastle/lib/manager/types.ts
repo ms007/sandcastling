@@ -109,11 +109,26 @@ export interface ObserveDeps {
   getMarkerComments(issueNumber: number): readonly MarkerComment[]
 }
 
+export interface ImplementerStats {
+  readonly newCommits: number
+  readonly totalAhead: number
+}
+
+export type StageOutcome =
+  | { readonly tag: "implementer"; readonly stats: ImplementerStats }
+  | { readonly tag: "reviewer"; readonly verdict: ReviewerVerdict }
+  | { readonly tag: "merger"; readonly issues: readonly number[] }
+
+export interface ExecuteResult {
+  readonly state: WorkflowState
+  readonly stageOutcome?: StageOutcome
+}
+
 export interface ActionDeps {
   moveStatus(itemId: string, status: StatusName): Promise<void>
   unblockDependents(issueNumber: number): Promise<readonly number[]>
   closeIssue(issueNumber: number): Promise<void>
-  runImplementer(issue: IssueRef, priorAttempts: string): Promise<void>
+  runImplementer(issue: IssueRef, priorAttempts: string): Promise<ImplementerStats>
   runReviewer(issue: IssueRef, priorAttempts: string): Promise<ReviewerVerdict>
   runMerger(issues: readonly IssueRef[], priorAttempts: string): Promise<void>
   postMarkerComment(issueNumber: number, body: string): Promise<void>

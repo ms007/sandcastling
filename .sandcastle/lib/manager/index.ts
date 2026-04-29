@@ -5,15 +5,24 @@ export {
   DEFAULT_TICK_CAP,
   runWorkflow,
 } from "./workflow.ts"
-export type { TickEvent, WorkflowDeps, WorkflowHooks } from "./workflow.ts"
+export type {
+  StageEndEvent,
+  StageStartEvent,
+  TickEvent,
+  WorkflowDeps,
+  WorkflowHooks,
+} from "./workflow.ts"
 export type {
   Action,
   ActionDeps,
   Decision,
+  ExecuteResult,
+  ImplementerStats,
   MarkerComment,
   ObserveDeps,
   Observation,
   ReviewerVerdict,
+  StageOutcome,
   WaveAnnotation,
   WorkflowConfig,
   WorkflowResult,

@@ -36,6 +36,7 @@ import {
   actionIssueAndStage,
   runWorkflow,
 } from "./manager/index.ts"
+import { createMultiplexingRenderer } from "./multiplexing-renderer.ts"
 import { resolveOutputCapabilities } from "./palette.ts"
 import { type RunHeader, openPrettyStdoutSink } from "./pretty-stdout-sink.ts"
 import {
@@ -96,6 +97,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
     process.env.NO_COLOR,
     process.env.SANDCASTLE_COLOR,
   )
+  const renderer = createMultiplexingRenderer(process.stdout, caps)
   const prettyHeader: RunHeader = {
     runId,
     seed: { number: config.seed.number, isPrd: config.seed.isPrd },
@@ -104,7 +106,8 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
     tickCap: resolved.tickCap,
     attemptCap: resolved.attemptCap,
   }
-  const pretty = openPrettyStdoutSink(process.stdout, caps, prettyHeader)
+  const pane = renderer.openPane(runId, `Run ${runId}`)
+  const pretty = openPrettyStdoutSink(pane, caps, prettyHeader)
 
   const sandboxes = createSandboxCache(resolved)
 

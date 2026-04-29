@@ -1,6 +1,7 @@
 import type { AgentStreamEvent } from "@ai-hero/sandcastle"
 import type { StageEndEvent, StageStartEvent, TickEvent, WorkflowResult } from "./manager/index.ts"
 import { actionIssueAndStage } from "./manager/index.ts"
+import type { PaneHandle } from "./multiplexing-renderer.ts"
 import type { OutputCapabilities } from "./palette.ts"
 
 export interface RunHeader {
@@ -65,7 +66,7 @@ function formatDuration(ms: number): string {
 }
 
 export function openPrettyStdoutSink(
-  out: { write(s: string): void },
+  pane: PaneHandle,
   caps: OutputCapabilities,
   header: RunHeader,
 ): PrettyStdoutSink {
@@ -83,14 +84,14 @@ export function openPrettyStdoutSink(
 
   const seedLabel = `#${header.seed.number}${header.seed.isPrd ? " (PRD)" : ""}`
 
-  const lines: string[] = [
+  pane.appendLine(
     `${bold(`Run ${header.runId}`)} ${g.bullet} seed ${seedLabel} ${g.bullet} ${header.children.length} child issue(s): ${childList}`,
-  ]
+  )
   if (header.logDir) {
-    lines.push(dim(`Logs: ${header.logDir}`))
+    pane.appendLine(dim(`Logs: ${header.logDir}`))
   }
-  lines.push(dim(`Caps: tickCap=${header.tickCap}, attemptCap=${header.attemptCap}`))
-  out.write(`${lines.join("\n")}\n\n`)
+  pane.appendLine(dim(`Caps: tickCap=${header.tickCap}, attemptCap=${header.attemptCap}`))
+  pane.appendLine("")
 
   let lastTarget: ReturnType<typeof actionIssueAndStage> = null
   let isFirstStreamEvent = true
@@ -104,7 +105,8 @@ export function openPrettyStdoutSink(
         lastTarget = actionIssueAndStage(event.decision.action)
         const { action } = event.decision
         if (action.tag === "finalizeIssue" || action.tag === "finalizePrd") {
-          out.write(`\n${green(`${g.ok} #${action.issue.number} done`)}\n`)
+          pane.appendLine("")
+          pane.appendLine(green(`${g.ok} #${action.issue.number} done`))
         }
       }
     },
@@ -115,11 +117,12 @@ export function openPrettyStdoutSink(
         event.stage === "merge"
           ? `${g.stage} merge${wavePart}`
           : `${g.stage} #${event.issue.number} ${event.stage}${wavePart} ${g.bullet} attempt ${event.attempt}`
-      out.write(`\n${bold(label)}\n`)
+      pane.appendLine("")
+      pane.appendLine(bold(label))
     },
     onStageEnd: (event) => {
       if (event.error) {
-        out.write(`  ${red(`${g.crashed} failed: ${event.error.message}`)}\n`)
+        pane.appendLine(`  ${red(`${g.crashed} failed: ${event.error.message}`)}`)
         return
       }
 
@@ -130,24 +133,24 @@ export function openPrettyStdoutSink(
       switch (outcome.tag) {
         case "implementer": {
           const commitWord = outcome.stats.newCommits === 1 ? "commit" : "commits"
-          out.write(
-            `  ${green(`${g.ok} done`)} ${g.bullet} ${dur} ${g.bullet} ${outcome.stats.newCommits} ${commitWord} ${g.bullet} ${outcome.stats.totalAhead} ahead of base\n`,
+          pane.appendLine(
+            `  ${green(`${g.ok} done`)} ${g.bullet} ${dur} ${g.bullet} ${outcome.stats.newCommits} ${commitWord} ${g.bullet} ${outcome.stats.totalAhead} ahead of base`,
           )
           break
         }
         case "reviewer": {
           if (outcome.verdict.tag === "approved") {
-            out.write(`  ${green(`${g.ok} approved`)} ${g.bullet} ${dur}\n`)
+            pane.appendLine(`  ${green(`${g.ok} approved`)} ${g.bullet} ${dur}`)
           } else {
-            out.write(
-              `  ${yellow(`${g.rework} rework: "${outcome.verdict.reason}"`)} ${g.bullet} ${dur}\n`,
+            pane.appendLine(
+              `  ${yellow(`${g.rework} rework: "${outcome.verdict.reason}"`)} ${g.bullet} ${dur}`,
             )
           }
           break
         }
         case "merger": {
           const issueList = outcome.issues.map((n) => `#${n}`).join(", ")
-          out.write(`  ${green(`${g.ok} merged ${issueList}`)} ${g.bullet} ${dur}\n`)
+          pane.appendLine(`  ${green(`${g.ok} merged ${issueList}`)} ${g.bullet} ${dur}`)
           break
         }
       }
@@ -157,7 +160,7 @@ export function openPrettyStdoutSink(
       isFirstStreamEvent = false
       const content =
         event.type === "text" ? event.message : `${event.name}(${event.formattedArgs})`
-      out.write(dim(`${prefix}${content}\n`))
+      pane.appendLine(dim(`${prefix}${content}`))
     },
     close: (result, error) => {
       const elapsed = formatDuration(Date.now() - startTime)
@@ -167,24 +170,32 @@ export function openPrettyStdoutSink(
         const stage = lastTarget?.stage ?? null
         const where = issue !== null ? ` at ${stage} #${issue}` : ""
         const logHint = header.logDir ? ` ${g.bullet} see logs: ${header.logDir}` : ""
-        out.write(`\n${red(`${g.crashed} Run crashed${where}`)}${logHint}\n`)
+        pane.appendLine("")
+        pane.appendLine(`${red(`${g.crashed} Run crashed${where}`)}${logHint}`)
+        pane.close(`crashed${where}`)
         return
       }
 
       if (!result) {
-        out.write(`\n${yellow(`${g.blocked} Run aborted`)}\n`)
+        pane.appendLine("")
+        pane.appendLine(yellow(`${g.blocked} Run aborted`))
+        pane.close("aborted")
         return
       }
 
       if (result.tag === "done") {
-        out.write(
-          `\n${green(`${g.ok} Run done`)} ${g.bullet} ${result.tickCount} ticks ${g.bullet} ${elapsed}\n`,
+        pane.appendLine("")
+        pane.appendLine(
+          `${green(`${g.ok} Run done`)} ${g.bullet} ${result.tickCount} ticks ${g.bullet} ${elapsed}`,
         )
+        pane.close("done")
         return
       }
 
       const reason = formatBlockedReason(result)
-      out.write(`\n${yellow(`${g.blocked} Run blocked`)} ${g.bullet} ${reason}\n`)
+      pane.appendLine("")
+      pane.appendLine(`${yellow(`${g.blocked} Run blocked`)} ${g.bullet} ${reason}`)
+      pane.close(`blocked: ${reason}`)
     },
   }
 }

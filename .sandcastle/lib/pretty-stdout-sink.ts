@@ -105,8 +105,7 @@ export function openPrettyStdoutSink(
         lastTarget = actionIssueAndStage(event.decision.action)
         const { action } = event.decision
         if (action.tag === "finalizeIssue" || action.tag === "finalizePrd") {
-          pane.appendLine("")
-          pane.appendLine(green(`${g.ok} #${action.issue.number} done`))
+          pane.appendSticky(green(`${g.ok} #${action.issue.number} done`))
         }
       }
     },
@@ -117,12 +116,11 @@ export function openPrettyStdoutSink(
         event.stage === "merge"
           ? `${g.stage} merge${wavePart}`
           : `${g.stage} #${event.issue.number} ${event.stage}${wavePart} ${g.bullet} attempt ${event.attempt}`
-      pane.appendLine("")
-      pane.appendLine(bold(label))
+      pane.appendSticky(bold(label))
     },
     onStageEnd: (event) => {
       if (event.error) {
-        pane.appendLine(`  ${red(`${g.crashed} failed: ${event.error.message}`)}`)
+        pane.appendSticky(`  ${red(`${g.crashed} failed: ${event.error.message}`)}`)
         return
       }
 
@@ -133,16 +131,16 @@ export function openPrettyStdoutSink(
       switch (outcome.tag) {
         case "implementer": {
           const commitWord = outcome.stats.newCommits === 1 ? "commit" : "commits"
-          pane.appendLine(
+          pane.appendSticky(
             `  ${green(`${g.ok} done`)} ${g.bullet} ${dur} ${g.bullet} ${outcome.stats.newCommits} ${commitWord} ${g.bullet} ${outcome.stats.totalAhead} ahead of base`,
           )
           break
         }
         case "reviewer": {
           if (outcome.verdict.tag === "approved") {
-            pane.appendLine(`  ${green(`${g.ok} approved`)} ${g.bullet} ${dur}`)
+            pane.appendSticky(`  ${green(`${g.ok} approved`)} ${g.bullet} ${dur}`)
           } else {
-            pane.appendLine(
+            pane.appendSticky(
               `  ${yellow(`${g.rework} rework: "${outcome.verdict.reason}"`)} ${g.bullet} ${dur}`,
             )
           }
@@ -150,7 +148,7 @@ export function openPrettyStdoutSink(
         }
         case "merger": {
           const issueList = outcome.issues.map((n) => `#${n}`).join(", ")
-          pane.appendLine(`  ${green(`${g.ok} merged ${issueList}`)} ${g.bullet} ${dur}`)
+          pane.appendSticky(`  ${green(`${g.ok} merged ${issueList}`)} ${g.bullet} ${dur}`)
           break
         }
       }

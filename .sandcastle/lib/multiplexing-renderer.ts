@@ -2,6 +2,13 @@ import { ANSI_RESET, type OutputCapabilities, createStreamColorCycle } from "./p
 
 export interface PaneHandle {
   appendLine(line: string): void
+  /**
+   * Append a line that always stays rendered between the pane title and the
+   * rolling content window. Use for stage headers / progress markers so the
+   * user keeps seeing what is done and where they are even after the rolling
+   * window has scrolled past.
+   */
+  appendSticky(line: string): void
   setTitle(title: string): void
   close(summary: string): void
 }
@@ -15,6 +22,13 @@ const ANSI_ERASE_BELOW = "\x1b[J"
 const ANSI_COL1 = "\x1b[G"
 const ANSI_HIDE_CURSOR = "\x1b[?25l"
 const ANSI_SHOW_CURSOR = "\x1b[?25h"
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ESC-based ANSI sequences requires \x1b
+const ANSI_SEQUENCE = /\x1b\[[0-9;?]*[a-zA-Z]/g
+
+function visibleLength(line: string): number {
+  return Array.from(line.replace(ANSI_SEQUENCE, "")).length
+}
 
 const PANE_COLORS = [
   "\x1b[36m", // cyan
@@ -34,9 +48,10 @@ function cursorUp(n: number): string {
 export function createMultiplexingRenderer(
   out: { write(s: string): void },
   caps: OutputCapabilities,
+  columns?: () => number | undefined,
 ): MultiplexingRenderer {
   if (caps.liveRedraw && caps.color) {
-    return createTtyRenderer(out, caps)
+    return createTtyRenderer(out, caps, columns)
   }
   return createStreamRenderer(out, caps)
 }
@@ -64,14 +79,17 @@ function createStreamRenderer(
 
       let closed = false
 
+      function write(line: string): void {
+        if (closed) return
+        const prefix = prefixFor(streamKey)
+        for (const physicalLine of line.split("\n")) {
+          out.write(`${prefix}${physicalLine}\n`)
+        }
+      }
+
       return {
-        appendLine(line: string): void {
-          if (closed) return
-          const prefix = prefixFor(streamKey)
-          for (const physicalLine of line.split("\n")) {
-            out.write(`${prefix}${physicalLine}\n`)
-          }
-        },
+        appendLine: write,
+        appendSticky: write,
 
         setTitle(_title: string): void {},
 
@@ -89,13 +107,24 @@ function createStreamRenderer(
 function createTtyRenderer(
   out: { write(s: string): void },
   caps: OutputCapabilities,
+  columns?: () => number | undefined,
 ): MultiplexingRenderer {
   const colorMap = new Map<string, string>()
   let colorIndex = 0
   const panes: TtyPaneHandle[] = []
-  let liveLines = 0
+  let livePhysicalRows = 0
   const borderChar = caps.unicode ? "─" : "-"
   const foldMark = caps.unicode ? "✓" : "*"
+
+  function physicalRowsFor(lines: readonly string[]): number {
+    const cols = columns?.()
+    if (cols === undefined || cols <= 0) return lines.length
+    let total = 0
+    for (const line of lines) {
+      total += Math.max(1, Math.ceil(visibleLength(line) / cols))
+    }
+    return total
+  }
 
   function assignColor(streamKey: string): string {
     const existing = colorMap.get(streamKey)
@@ -114,6 +143,9 @@ function createTtyRenderer(
     const lines: string[] = []
     for (const pane of panes) {
       lines.push(renderTitle(pane.title, pane.color))
+      for (const sticky of pane.getSticky()) {
+        lines.push(`  ${sticky}`)
+      }
       const window = pane.getWindow()
       for (const line of window) {
         lines.push(`  ${line}`)
@@ -126,8 +158,8 @@ function createTtyRenderer(
     const content = computeLiveContent()
     const buf: string[] = []
     buf.push(ANSI_HIDE_CURSOR)
-    if (liveLines > 0) {
-      buf.push(cursorUp(liveLines))
+    if (livePhysicalRows > 0) {
+      buf.push(cursorUp(livePhysicalRows))
       buf.push(ANSI_COL1)
     }
     for (const line of content) {
@@ -135,7 +167,7 @@ function createTtyRenderer(
     }
     buf.push(ANSI_ERASE_BELOW)
     buf.push(ANSI_SHOW_CURSOR)
-    liveLines = content.length
+    livePhysicalRows = physicalRowsFor(content)
     out.write(buf.join(""))
   }
 
@@ -149,8 +181,8 @@ function createTtyRenderer(
 
     const buf: string[] = []
     buf.push(ANSI_HIDE_CURSOR)
-    if (liveLines > 0) {
-      buf.push(cursorUp(liveLines))
+    if (livePhysicalRows > 0) {
+      buf.push(cursorUp(livePhysicalRows))
       buf.push(ANSI_COL1)
     }
     buf.push(`${ANSI_ERASE_LINE}${summaryLine}\n`)
@@ -159,7 +191,7 @@ function createTtyRenderer(
     }
     buf.push(ANSI_ERASE_BELOW)
     buf.push(ANSI_SHOW_CURSOR)
-    liveLines = remaining.length
+    livePhysicalRows = physicalRowsFor(remaining)
     out.write(buf.join(""))
   }
 
@@ -179,6 +211,7 @@ class TtyPaneHandle implements PaneHandle {
   readonly color: string
   private closed = false
   private readonly lines: string[] = []
+  private readonly stickyLines: string[] = []
   private readonly onUpdate: () => void
   private readonly onClose: (pane: TtyPaneHandle, summary: string) => void
 
@@ -194,6 +227,10 @@ class TtyPaneHandle implements PaneHandle {
     this.onClose = onClose
   }
 
+  getSticky(): readonly string[] {
+    return this.stickyLines
+  }
+
   getWindow(): readonly string[] {
     const start = Math.max(0, this.lines.length - DEFAULT_WINDOW_SIZE)
     return this.lines.slice(start)
@@ -203,6 +240,14 @@ class TtyPaneHandle implements PaneHandle {
     if (this.closed) return
     for (const physicalLine of line.split("\n")) {
       this.lines.push(physicalLine)
+    }
+    this.onUpdate()
+  }
+
+  appendSticky(line: string): void {
+    if (this.closed) return
+    for (const physicalLine of line.split("\n")) {
+      this.stickyLines.push(physicalLine)
     }
     this.onUpdate()
   }

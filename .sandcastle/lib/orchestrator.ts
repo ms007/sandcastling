@@ -97,7 +97,7 @@ export async function runOrchestrator(options: OrchestratorOptions): Promise<Wor
     process.env.NO_COLOR,
     process.env.SANDCASTLE_COLOR,
   )
-  const renderer = createMultiplexingRenderer(process.stdout, caps)
+  const renderer = createMultiplexingRenderer(process.stdout, caps, () => process.stdout.columns)
   const prettyHeader: RunHeader = {
     runId,
     seed: { number: config.seed.number, isPrd: config.seed.isPrd },

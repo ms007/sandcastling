@@ -707,6 +707,126 @@ describe("MultiplexingRenderer", () => {
     })
   })
 
+  describe("TTY backend — sticky lines", () => {
+    it("keeps sticky lines visible above the rolling content window", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, TTY)
+      const pane = renderer.openPane("a", "T")
+      pane.appendSticky("● stage A")
+      // Write more rolling lines than the window holds (5).
+      for (let i = 1; i <= 7; i++) {
+        pane.appendLine(`line ${i}`)
+      }
+
+      // After all writes, the latest frame must still contain the sticky line
+      // and only the last 5 rolling lines (line 3..7).
+      const t = title("T", CYAN)
+      const lastFrame = frame(7, [
+        t,
+        "  ● stage A",
+        "  line 3",
+        "  line 4",
+        "  line 5",
+        "  line 6",
+        "  line 7",
+      ])
+      assert.ok(
+        bytes().endsWith(lastFrame),
+        `final frame mismatch: ${JSON.stringify(bytes().slice(-200))}`,
+      )
+    })
+
+    it("renders multiple sticky lines in append order, all preserved across rolling churn", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, TTY)
+      const pane = renderer.openPane("a", "T")
+      pane.appendSticky("● stage A")
+      pane.appendLine("a-line")
+      pane.appendSticky("● stage B")
+      for (let i = 1; i <= 6; i++) {
+        pane.appendLine(`b ${i}`)
+      }
+
+      const t = title("T", CYAN)
+      const lastFrame = frame(8, [
+        t,
+        "  ● stage A",
+        "  ● stage B",
+        "  b 2",
+        "  b 3",
+        "  b 4",
+        "  b 5",
+        "  b 6",
+      ])
+      assert.ok(
+        bytes().endsWith(lastFrame),
+        `final frame mismatch: ${JSON.stringify(bytes().slice(-300))}`,
+      )
+    })
+
+    it("stream backend writes sticky lines just like appendLine (single pane)", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, STREAM)
+      const pane = renderer.openPane("k", "T")
+      pane.appendSticky("● stage")
+      pane.appendLine("line")
+      assert.equal(bytes(), "● stage\nline\n")
+    })
+
+    it("stream backend prefixes sticky lines in multi-pane mode", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, STREAM)
+      const a = renderer.openPane("a", "A")
+      renderer.openPane("b", "B")
+      a.appendSticky("● stage")
+      assert.ok(bytes().endsWith("[a] ● stage\n"), `got: ${JSON.stringify(bytes())}`)
+    })
+  })
+
+  describe("TTY backend — wrapped-line cursor accounting", () => {
+    it("counts physical rows by terminal width when computing cursorUp", () => {
+      const { out, bytes } = capture()
+      const cols = 20
+      const renderer = createMultiplexingRenderer(out, TTY, () => cols)
+      const pane = renderer.openPane("a", "T")
+      // Visible width 30 chars → wraps onto 2 physical rows when cols=20.
+      const long = "x".repeat(30)
+      pane.appendLine(long)
+
+      // First frame draws only the title (1 row). Second frame must move up
+      // by (1 title row) + (2 wrapped content rows) = 3 — not 2.
+      const t = title("T", CYAN)
+      const firstFrame = frame(0, [t])
+      const secondFrame = `${HIDE}${up(1)}${COL1}${EL}${t}\n${EL}  ${long}\n${ED}${SHOW}`
+      const expected = `${firstFrame}${secondFrame}`
+
+      assert.equal(bytes(), expected)
+
+      // Now drive a third write and verify that the next cursorUp lifts past
+      // the 2 wrapped content rows from the previous frame.
+      pane.appendLine("y")
+      const tail = bytes().slice(expected.length)
+      assert.ok(
+        tail.startsWith(`${HIDE}${up(3)}${COL1}`),
+        `tail did not start with up(3): ${JSON.stringify(tail)}`,
+      )
+    })
+
+    it("falls back to logical line count when no columns provider is given", () => {
+      const { out, bytes } = capture()
+      const renderer = createMultiplexingRenderer(out, TTY)
+      const pane = renderer.openPane("a", "T")
+      const long = "x".repeat(200)
+      pane.appendLine(long)
+      pane.appendLine("y")
+
+      // Without columns info the renderer must keep the legacy behavior:
+      // logical line counts (1 title + 1 content = 2) for cursorUp.
+      const allBytes = bytes()
+      assert.ok(allBytes.includes(`${HIDE}${up(2)}${COL1}`))
+    })
+  })
+
   describe("multi-line appendLine defensive split", () => {
     it("stream backend writes one terminal line per embedded \\n (single pane)", () => {
       const { out, bytes } = capture()

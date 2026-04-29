@@ -12,6 +12,7 @@ const COLOR_ASCII: OutputCapabilities = { color: true, unicode: false, liveRedra
 
 type PaneOp =
   | { type: "appendLine"; line: string }
+  | { type: "appendSticky"; line: string }
   | { type: "setTitle"; title: string }
   | { type: "close"; summary: string }
 
@@ -20,6 +21,9 @@ function fakePaneHandle(): { pane: PaneHandle; ops: PaneOp[]; output: () => stri
   const pane: PaneHandle = {
     appendLine(line: string) {
       ops.push({ type: "appendLine", line })
+    },
+    appendSticky(line: string) {
+      ops.push({ type: "appendSticky", line })
     },
     setTitle(title: string) {
       ops.push({ type: "setTitle", title })
@@ -30,8 +34,8 @@ function fakePaneHandle(): { pane: PaneHandle; ops: PaneOp[]; output: () => stri
   }
   const output = () =>
     ops
-      .filter((o) => o.type === "appendLine")
-      .map((o) => (o as { type: "appendLine"; line: string }).line)
+      .filter((o) => o.type === "appendLine" || o.type === "appendSticky")
+      .map((o) => (o as { type: string; line: string }).line)
       .join("\n")
   return { pane, ops, output }
 }
